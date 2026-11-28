@@ -7,9 +7,11 @@ A light image viewer, a program of its own (`end4pC-imag3s`, or `end4pC imag3s [
 ## Launching it
 
 - **Application menu / launcher:** look for **Imag3s**; `end4pC update` and the installer add its entry (it needs no new libraries). From a terminal or a key bind: `end4pC imag3s`, `end4pC imag3s ~/Pictures/photo.jpg`; in Tools > Keybinds it is a Shell action. To open pictures with it by default: `xdg-mime default end4pC-imag3s.desktop image/png image/jpeg` (optional).
-- Without a picture it asks for one. It can open whatever your `gdk-pixbuf` loaders read (PNG, JPEG, WebP, GIF (first frame), BMP, TIFF, SVG, AVIF, ICO... depending on what is installed). Photos taken sideways are turned the right way up; a picture over 100 megapixels is refused.
+- Without a picture it asks for one. It can open whatever your `gdk-pixbuf` loaders read (PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, AVIF, ICO... depending on what is installed). Photos taken sideways are turned the right way up; a picture over 100 megapixels is refused.
 
 ## Viewing
+
+- **Moving pictures:** a GIF or an animated WebP plays at the pace its file says; the small button beside the zoom chip pauses and plays it. While you draw on it (or after it has edits) it stops on the frame that was showing, and the saved copy is that frame.
 
 - **Folder:** the arrows (or Left / Right, Page Up / Page Down, Space / Backspace, Home / End) go through the pictures of the same folder in natural order (`img2` before `img10`).
 - **Zoom:** mouse wheel (towards the pointer), `+` / `-`, `0` fits the window, `1` is 100%, `2` is 200%; the chip at the top left goes between "fit" and 100%. Drag the picture to move it (right or middle button always drags, even while drawing).

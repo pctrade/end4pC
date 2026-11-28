@@ -137,6 +137,14 @@ void drawCanvas(cairo_t* cr, const Rect& r) {
         rrect(cr, z.x, z.y, z.w, z.h, 16);
         cairo_fill(cr);
         text(cr, label, z.x, z.y + 6, 14, true, color("on_surface"), 1, z.w, 1);
+        if (g.anim) {  // a picture that moves: play and pause
+            const Rect b{z.x + z.w + 8, z.y, 32, 32};
+            const bool ahov = hot(b, AnimBtn);
+            src(cr, color("surface_container_high"), ahov ? 0.98 : 0.86);
+            cairo_arc(cr, b.x + 16, b.y + 16, 16, 0, 2 * M_PI);
+            cairo_fill(cr);
+            icon(cr, g.animPlaying ? "pause" : "play", b.x + 6, b.y + 6, 20, color("on_surface"));
+        }
     }
 }
 

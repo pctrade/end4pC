@@ -42,21 +42,12 @@ void listSiblings(const std::string& path) {
     g.index = it == g.siblings.end() ? -1 : static_cast<int>(it - g.siblings.begin());
 }
 
-// Reads a picture in a thread (a big photo takes a moment): the result waits in g.loaded for the loop.
-cairo_surface_t* decodePicture(const std::string& path, uint64_t& bytes, std::string& error) {
-    int w = 0, h = 0;
-    if (!gdk_pixbuf_get_file_info(path.c_str(), &w, &h)) { error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
-    if (double(w) * double(h) > kMaxPixels) { error = i18n::tr("This picture is too big to open"); return nullptr; }
-    GError* err = nullptr;
-    GdkPixbuf* raw = gdk_pixbuf_new_from_file(path.c_str(), &err);
-    if (!raw) { if (err) g_error_free(err); error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
-    GdkPixbuf* pb = gdk_pixbuf_apply_embedded_orientation(raw);  // (photos taken sideways)
-    g_object_unref(raw);
-    if (!pb) { error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
+// A pixbuf as the pixels cairo paints (premultiplied), or nullptr when it is too big for memory.
+cairo_surface_t* pixbufToSurface(GdkPixbuf* pb) {
     const int pw = gdk_pixbuf_get_width(pb), ph = gdk_pixbuf_get_height(pb), nch = gdk_pixbuf_get_n_channels(pb), rs = gdk_pixbuf_get_rowstride(pb);
     const guchar* px = gdk_pixbuf_get_pixels(pb);
     cairo_surface_t* img = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pw, ph);
-    if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(img); g_object_unref(pb); error = i18n::tr("This picture is too big to open"); return nullptr; }
+    if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(img); return nullptr; }
     unsigned char* dst = cairo_image_surface_get_data(img);
     const int drs = cairo_image_surface_get_stride(img);
     for (int y = 0; y < ph; y++)
@@ -67,9 +58,39 @@ cairo_surface_t* decodePicture(const std::string& path, uint64_t& bytes, std::st
                 (a << 24) | (((q[0] * a + 127) / 255) << 16) | (((q[1] * a + 127) / 255) << 8) | ((q[2] * a + 127) / 255);
         }
     cairo_surface_mark_dirty(img);
-    g_object_unref(pb);
+    return img;
+}
+
+// Reads a picture in a thread (a big photo takes a moment): the result waits in g.loaded for the loop. A GIF or WebP that moves comes back with
+// its animation (the surface is its first frame).
+cairo_surface_t* decodePicture(const std::string& path, uint64_t& bytes, std::string& error, GdkPixbufAnimation*& anim) {
+    anim = nullptr;
+    int w = 0, h = 0;
+    if (!gdk_pixbuf_get_file_info(path.c_str(), &w, &h)) { error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
+    if (double(w) * double(h) > kMaxPixels) { error = i18n::tr("This picture is too big to open"); return nullptr; }
     struct stat st{};
     bytes = stat(path.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
+    const std::string ext = lowerExt(path);
+    GError* err = nullptr;
+    if ((ext == "gif" || ext == "webp") && bytes < 96u * 1024 * 1024 && double(w) * double(h) < 40e6) {
+        GdkPixbufAnimation* a = gdk_pixbuf_animation_new_from_file(path.c_str(), &err);
+        if (err) { g_error_free(err); err = nullptr; }
+        if (a && !gdk_pixbuf_animation_is_static_image(a)) {
+            GdkPixbufAnimationIter* it = gdk_pixbuf_animation_get_iter(a, nullptr);
+            cairo_surface_t* first = it ? pixbufToSurface(gdk_pixbuf_animation_iter_get_pixbuf(it)) : nullptr;
+            if (it) g_object_unref(it);
+            if (first) { anim = a; return first; }
+        }
+        if (a) g_object_unref(a);
+    }
+    GdkPixbuf* raw = gdk_pixbuf_new_from_file(path.c_str(), &err);
+    if (!raw) { if (err) g_error_free(err); error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
+    GdkPixbuf* pb = gdk_pixbuf_apply_embedded_orientation(raw);  // (photos taken sideways)
+    g_object_unref(raw);
+    if (!pb) { error = i18n::tr("This file is not a picture that can be shown"); return nullptr; }
+    cairo_surface_t* img = pixbufToSurface(pb);
+    g_object_unref(pb);
+    if (!img) error = i18n::tr("This picture is too big to open");
     return img;
 }
 
@@ -81,7 +102,7 @@ void startLoad(const std::string& path) {
         Loaded out;
         out.serial = serial;
         out.path = path;
-        out.surface = decodePicture(path, out.bytes, out.error);
+        out.surface = decodePicture(path, out.bytes, out.error, out.anim);
         {
             std::lock_guard<std::mutex> lock(g.loadedMutex);
             g.loaded.push_back(std::move(out));
@@ -96,6 +117,31 @@ void updateTitle() {
     xdg_toplevel_set_title(g.toplevel, t.c_str());
 }
 
+void stopAnimation() {
+    if (g.animIter) g_object_unref(g.animIter);
+    if (g.anim) g_object_unref(g.anim);
+    g.animIter = nullptr;
+    g.anim = nullptr;
+}
+// When the next frame of a moving picture is due.
+void scheduleFrame() {
+    if (!g.animIter) return;
+    const int ms = gdk_pixbuf_animation_iter_get_delay_time(g.animIter);
+    g.nextFrame = Clock::now() + std::chrono::milliseconds(ms < 0 ? 100000 : std::max(20, ms));
+}
+// It moves only while nothing is being drawn on it (an edit is made on the frame that was showing).
+bool animating() { return g.anim && g.animIter && g.animPlaying && !g.editing && !g.edits.dirty(); }
+void stepAnimation() {
+    if (!animating() || Clock::now() < g.nextFrame) return;
+    gdk_pixbuf_animation_iter_advance(g.animIter, nullptr);
+    if (cairo_surface_t* frame = pixbufToSurface(gdk_pixbuf_animation_iter_get_pixbuf(g.animIter))) {
+        if (g.image) cairo_surface_destroy(g.image);
+        g.image = frame;
+        g.dirty = true;
+    }
+    scheduleFrame();
+}
+
 void applyLoaded() {
     std::vector<Loaded> done;
     {
@@ -103,11 +149,18 @@ void applyLoaded() {
         done.swap(g.loaded);
     }
     for (Loaded& l : done) {
-        if (l.serial != g.loadSerial.load()) { if (l.surface) cairo_surface_destroy(l.surface); continue; }  // (an older request: the user already moved on)
+        if (l.serial != g.loadSerial.load()) { if (l.surface) cairo_surface_destroy(l.surface); if (l.anim) g_object_unref(l.anim); continue; }  // (an older request: the user already moved on)
         g.loading = false;
         if (!l.surface) { say(fs::path(l.path).filename().string() + ": " + l.error); continue; }
         if (g.image) cairo_surface_destroy(g.image);
         g.image = l.surface;
+        stopAnimation();
+        if (l.anim) {  // it moves: from the first frame, at the pace its file says
+            g.anim = l.anim;
+            g.animIter = gdk_pixbuf_animation_get_iter(g.anim, nullptr);
+            g.animPlaying = true;
+            scheduleFrame();
+        }
         g.path = l.path;
         g.bytes = l.bytes;
         g.edits.clear();
@@ -262,6 +315,7 @@ void toggleFullscreen() {
 }
 void setEditing(bool on) {
     commitText();
+    if (!on) scheduleFrame();
     g.editing = on && g.image;
     g.drawing = false;
     g.dirty = true;
@@ -501,6 +555,7 @@ void onClick(uint32_t button) {
         case BtnTrash: trashPicture(); break;
         case BtnSave: saveCopy(); break;
         case BtnClose: requestQuit(); break;
+        case AnimBtn: g.animPlaying = !g.animPlaying; scheduleFrame(); break;
         case ZoomChip: if (g.fit || std::fabs(g.zoom - 1) > 0.01) zoomAt(1.0, g.canvas.x + g.canvas.w / 2, g.canvas.y + g.canvas.h / 2); else zoomFit(); break;
         case ToolBtn: commitText(); g.tool = static_cast<im::Tool>(arg); break;
         case ColorBtn: g.colorIdx = arg; break;
@@ -661,6 +716,7 @@ bool connectWayland() {
 void tick() {
     const auto now = Clock::now();
     applyLoaded();
+    stepAnimation();
     {  // what the file dialogs answered
         std::vector<std::string> opened;
         std::string saved;
@@ -691,6 +747,10 @@ void tick() {
 // The loop wakes when the next key repeat is due (a held key repeats from the loop).
 int pollTimeout() {
     int t = g.typing ? 120 : !g.toast.empty() ? 100 : g.loading ? 100 : 300;
+    if (animating()) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(g.nextFrame - Clock::now()).count();
+        t = std::min<int>(t, static_cast<int>(std::max<long long>(1, left)));
+    }
     if (g.repeatKey) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(g.repeatAt - Clock::now()).count();
         t = std::min<int>(t, static_cast<int>(std::max<long long>(1, left)));
@@ -707,6 +767,7 @@ void teardown() {
     if (g.surface) wl_surface_destroy(g.surface);
     for (auto& b : g.buffers) b.clear();
     if (g.display) { wl_display_flush(g.display); wl_display_disconnect(g.display); }
+    stopAnimation();
     if (g.image) cairo_surface_destroy(g.image);
     if (g.composeState) xkb_compose_state_unref(g.composeState);
     if (g.composeTable) xkb_compose_table_unref(g.composeTable);

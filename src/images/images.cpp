@@ -58,7 +58,7 @@ constexpr double kPad = 16, kRadius = 28, kHead = 44;
 constexpr double kMaxPixels = 100e6;  // a picture bigger than this is not opened (4 bytes per pixel in memory)
 
 enum Id { None, BtnOpen, BtnPrev, BtnNext, BtnEdit, BtnRotate, BtnCopy, BtnTrash, BtnSave, BtnClose, Canvas, NavLeft, NavRight, ZoomChip, ToolBtn, ColorBtn, WidthBtn, BtnUndo, BtnRedo,
-          BtnFlip, DlgSave, DlgDiscard, DlgCancel, Scrim };
+          BtnFlip, AnimBtn, DlgSave, DlgDiscard, DlgCancel, Scrim };
 struct Hit { Rect r; int id, arg; };
 enum class After { Nothing, Quit, Load };
 
@@ -79,6 +79,7 @@ struct Loaded {
     uint64_t serial = 0;
     std::string path, error;
     cairo_surface_t* surface = nullptr;
+    GdkPixbufAnimation* anim = nullptr;  // a picture that moves (GIF, WebP)
     uint64_t bytes = 0;
 };
 
@@ -135,6 +136,10 @@ struct App {
     bool loading = false;
     std::mutex loadedMutex;
     std::vector<Loaded> loaded;
+    GdkPixbufAnimation* anim = nullptr;  // the picture on screen moves
+    GdkPixbufAnimationIter* animIter = nullptr;
+    bool animPlaying = true;
+    Clock::time_point nextFrame{};
 
     // The view.
     Rect canvas;
