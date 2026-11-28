@@ -167,10 +167,10 @@ double netIconPart(const App& app, bool side) {
 double netFramePad(const App& app, bool side) {
     if (side || !netSpeedShown(app)) return 0;
     const std::string s = widgetStyle(app, "network");
-    return s == "pill" || s == "outline" || s == "badge" || s == "tonal" || s == "square" || m3ButtonLook(s) ? 8 : 0;
+    return s == "m3" || s == "pill" || s == "outline" || s == "badge" || s == "tonal" || s == "square" || m3ButtonLook(s) ? 8 : 0;
 }
 double netExtent(const App& app, bool side) {
-    return netIconPart(app, side) + (netSpeedShown(app) ? (side ? kNetSpeedH : kNetSpeedW) : 0) + netFramePad(app, side) + (netSpeedShown(app) ? 0 : softExtra(app, "network"));
+    return netIconPart(app, side) + (netSpeedShown(app) ? (side ? kNetSpeedH : app.netSpeedW) : 0) + netFramePad(app, side) + (netSpeedShown(app) ? 0 : softExtra(app, "network"));
 }
 
 bool trayPinned(const App& app, const TrayIcon& t) {

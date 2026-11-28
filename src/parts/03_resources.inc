@@ -356,7 +356,7 @@ std::string netRateText(double rate, bool compact) {
     int u = 0;
     while (v >= 1024 && u < 3) { v /= 1024; u++; }
     char b[32];
-    std::snprintf(b, sizeof b, compact ? "%.*f%s" : "%.*f %s", u > 0 && v < 100 ? 1 : 0, v, compact ? shortU[u] : full[u]);
+    std::snprintf(b, sizeof b, compact ? "%.*f%s" : "%.*f %s", u > 0 && v < 99.95 ? 1 : 0, v, compact ? shortU[u] : full[u]);
     return b;
 }
 void readNetBytes(unsigned long long& rx, unsigned long long& tx) {
