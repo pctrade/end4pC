@@ -270,6 +270,108 @@ struct Lister : std::enable_shared_from_this<Lister> {
     }
 };
 
+// Selection totals and free space can both touch slow or removable drives.
+struct StatusRequest {
+    uint64_t serial = 0;
+    std::string path;
+    std::vector<std::string> folders;
+    uint64_t bytes = 0;
+    bool measure = false;
+};
+struct StatusResult {
+    uint64_t serial = 0;
+    fs::space_info space{};
+    uint64_t bytes = 0;
+    bool measured = false, partial = false;
+};
+struct StatusProbe : std::enable_shared_from_this<StatusProbe> {
+    std::mutex mutex;
+    StatusRequest pending;
+    StatusResult result;
+    std::atomic<uint64_t> wanted{0};
+    bool running = false;
+    int wakeFd = -1;
+
+    void request(StatusRequest next) {
+        std::lock_guard<std::mutex> lock(mutex);
+        wanted = next.serial;
+        pending = std::move(next);
+        if (running) return;
+        running = true;
+        std::thread([self = shared_from_this()] { self->run(); }).detach();
+    }
+
+    void run() {
+        for (;;) {
+            StatusRequest job;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (pending.serial == 0) { running = false; return; }
+                job = std::exchange(pending, {});
+            }
+            StatusResult next;
+            next.serial = job.serial;
+            next.bytes = job.bytes;
+            next.measured = job.measure;
+            std::error_code ec;
+            next.space = fs::space(job.path, ec);
+            if (ec) next.space = {};
+            auto folders = std::move(job.folders);
+            while (!folders.empty() && wanted == job.serial) {
+                auto folder = std::move(folders.back());
+                folders.pop_back();
+                const auto folderType = fs::symlink_status(folder, ec);
+                if (ec || !fs::is_directory(folderType)) { next.partial = true; continue; }
+                fs::directory_iterator it(folder, ec), end;
+                if (ec) { next.partial = true; continue; }
+                while (it != end && wanted == job.serial) {
+                    const auto type = it->symlink_status(ec);
+                    if (!ec && fs::is_directory(type)) folders.push_back(it->path().string());
+                    else if (!ec && fs::is_regular_file(type)) {
+                        const auto size = it->file_size(ec);
+                        if (!ec) next.bytes += size;
+                    }
+                    if (ec) next.partial = true;
+                    it.increment(ec);
+                    if (ec) next.partial = true;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (wanted != job.serial) continue;
+                result = next;
+            }
+            const char c = 1;
+            if (wakeFd >= 0 && write(wakeFd, &c, 1) < 0) {}
+        }
+    }
+
+    StatusResult take() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return std::exchange(result, {});
+    }
+};
+
+std::string entryType(const Entry& entry) {
+    if (entry.link) return i18n::tr("Symbolic link");
+    if (entry.dir) return i18n::tr("Folder");
+    if (!entry.regular) return i18n::tr("Special file");
+    gboolean uncertain = false;
+    char* contentType = g_content_type_guess(entry.name.c_str(), nullptr, 0, &uncertain);
+    char* description = !uncertain && contentType ? g_content_type_get_description(contentType) : nullptr;
+    std::string label;
+    if (description) label = description;
+    else if (!entry.extension.empty()) {
+        label = entry.extension;
+        for (char& c : label) c = g_ascii_toupper(c);
+        label += " · ";
+        label += i18n::tr("File");
+    } else label = i18n::tr("File");
+    g_free(description);
+    g_free(contentType);
+    return label;
+}
+
 // ---- thumbnails ------------------------------------------------------------------------------------------------------------------------
 constexpr int kThumbPx = 256;      // the size of the thumbnails on disk ("large" of the freedesktop spec)
 constexpr int kMemoryPx = 192;     // what is kept in memory: the biggest tile (96 px) at a scale of 2

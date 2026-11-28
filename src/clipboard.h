@@ -92,8 +92,14 @@ inline bool paste(std::string& out) {
     close(po[0]);
     const bool ok = waitChild(pid, 500);
     if (out.size() > kMaxPaste) out.resize(kMaxPaste);
-    while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80) out.pop_back();
-    if (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0xC0) out.pop_back();
+    if (!out.empty()) {
+        size_t last = out.size() - 1;
+        while (last > 0 && (static_cast<unsigned char>(out[last]) & 0xC0) == 0x80) --last;
+        const unsigned char lead = static_cast<unsigned char>(out[last]);
+        const size_t width = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 :
+                             (lead & 0xF0) == 0xE0 ? 3 : (lead & 0xF8) == 0xF0 ? 4 : 0;
+        if (width == 0 || out.size() - last < width) out.resize(last);
+    }
     return ok && !out.empty();
 }
 }

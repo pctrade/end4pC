@@ -1,3 +1,4 @@
+#include "icontheme.h"
 #include <cairo/cairo.h>
 #include "i18n.h"
 #include <future>

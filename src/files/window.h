@@ -21,7 +21,13 @@ void navigate(const std::string& path, bool record = true) {
     const std::string target = fs::weakly_canonical(path, ec).string();
     if (ec || !fs::is_directory(target, ec)) { g.toast = i18n::tr("That folder cannot be opened"); g.toastAt = Clock::now(); g.dirty = true; return; }
     if (record && !pane().cwd.empty() && target != pane().cwd) { pane().back.push_back(pane().cwd); pane().forward.clear(); if (pane().back.size() > 200) pane().back.erase(pane().back.begin()); }
+    if (pane().cwd != target) {
+        pane().space = {};
+        pane().spaceAt = {};
+    }
     pane().cwd = target;
+    pane().selectionDirty = true;
+    g.focus = 0;
     pane().lastClickIndex = -1;
     pane().scroll = pane().scrollMax = 0;
     pane().band.reset();
@@ -45,15 +51,18 @@ void goUp() { if (pane().cwd != "/" && !inTrash()) navigate(fs::path(pane().cwd)
 
 void rebuildView() {
     pane().view.clear();
+    pane().visibleFolders = 0;
     const std::string needle = lowerCase(pane().search.s);
     for (size_t i = 0; i < pane().entries.size(); i++) {
         const Entry& e = pane().entries[i];
         if (e.hidden && !g.showHidden && needle.empty()) continue;
         if (!needle.empty() && e.lower.find(needle) == std::string::npos) continue;
         pane().view.push_back(static_cast<int>(i));
+        if (e.dir) ++pane().visibleFolders;
     }
     pane().cursor = std::min(pane().cursor, static_cast<int>(pane().view.size()) - 1);
     pane().viewDirty = false;
+    pane().selectionDirty = true;
     g.dirty = true;
 }
 void applyListing(Listing& l) {
@@ -139,12 +148,14 @@ void setSort(Sort by) {
 
 // ---- selection -------------------------------------------------------------------------------------------------------------------------
 void selectOnly(int i) {
+    pane().selectionDirty = true;
     pane().selected.clear();
     if (i >= 0 && i < static_cast<int>(pane().view.size())) pane().selected.insert(entryAt(i).path);
     pane().cursor = pane().anchor = i;
     g.dirty = true;
 }
 void selectRange(int to) {
+    pane().selectionDirty = true;
     if (pane().anchor < 0) pane().anchor = 0;
     pane().selected.clear();
     for (int i = std::min(pane().anchor, to); i <= std::max(pane().anchor, to) && i < static_cast<int>(pane().view.size()); i++) pane().selected.insert(entryAt(i).path);
@@ -152,12 +163,14 @@ void selectRange(int to) {
     g.dirty = true;
 }
 void toggleOne(int i) {
+    pane().selectionDirty = true;
     const std::string& p = entryAt(i).path;
     if (!pane().selected.erase(p)) pane().selected.insert(p);
     pane().cursor = pane().anchor = i;
     g.dirty = true;
 }
 void selectAll() {
+    pane().selectionDirty = true;
     for (int i : pane().view) pane().selected.insert(pane().entries[static_cast<size_t>(i)].path);
     g.dirty = true;
 }
@@ -200,6 +213,44 @@ void openEntry(int i) {
     if (!e.regular) { say(i18n::tr("That is not a regular file")); return; }
     launchDetached("xdg-open", e.path.c_str());
 }
+void openAddress(bool selectPath = true) {
+    Pane& p = pane();
+    g.focus = 3;
+    p.address = {p.cwd, p.cwd.size()};
+    p.addressAnchor = selectPath ? 0 : p.address.cur;
+    p.addressScroll = 0;
+    g.caretOn = true;
+    g.caretReset = Clock::now();
+    g.dirty = true;
+}
+
+fs::path enteredPath(const std::string& input, const std::string& cwd) {
+    if (input.empty()) return {};
+    if (input.starts_with("file:")) {
+        gchar* host = nullptr;
+        gchar* file = g_filename_from_uri(input.c_str(), &host, nullptr);
+        const fs::path path = file && (!host || g_ascii_strcasecmp(host, "localhost") == 0) ? fs::path(file) : fs::path{};
+        g_free(host);
+        g_free(file);
+        return path;
+    }
+    if (input == "~") return homeDir();
+    if (input.starts_with("~/")) return homeDir() + input.substr(1);
+    return fs::path(cwd) / fs::path(input);
+}
+
+void submitAddress() {
+    const auto path = enteredPath(pane().address.s, pane().cwd);
+    std::error_code ec;
+    const auto type = path.empty() ? fs::file_status{} : fs::status(path, ec);
+    if (!ec && fs::is_directory(type)) navigate(path.string());
+    else if (!ec && fs::is_regular_file(type)) {
+        launchDetached("xdg-open", path.c_str());
+        g.focus = 0;
+        g.dirty = true;
+    } else say(i18n::tr("That location cannot be opened"));
+}
+
 void toggleHidden() {
     const bool show = !g.showHidden;
     if (!rememberHidden(show)) say(i18n::tr("Could not save the hidden files preference"));
@@ -376,7 +427,7 @@ void addFolderActions(std::vector<MenuItem>& menu, bool selectedFolder) {
 using Application = std::shared_ptr<GAppInfo>;
 struct FileApplications {
     Application preferred;
-    std::vector<Application> alternatives, others;
+    std::vector<Application> alternatives;
 };
 
 FileApplications fileApplications(const Entry& e) {
@@ -399,20 +450,35 @@ FileApplications fileApplications(const Entry& e) {
         }
         g_object_unref(info);
     }
+    return result;
+}
+
+MenuItem openWithRow(const std::string& label, const char* icon, const Application& app, const std::string& path) {
+    auto row = item(label, icon, Act::OpenWith);
+    row.application = app;
+    row.target = path;
+    return row;
+}
+
+void showOtherApplications(const std::string& path) {
+    if (g.menuSub < 0 || g.menuSub >= static_cast<int>(g.menu.size())) return;
+    std::vector<MenuItem> choices;
     GList* installed = g_app_info_get_all();
     for (GList* entry = installed; entry; entry = entry->next) {
         auto* app = G_APP_INFO(entry->data);
         if (!g_app_info_should_show(app) || (!g_app_info_supports_files(app) && !g_app_info_supports_uris(app))) continue;
-        if (result.preferred && g_app_info_equal(app, result.preferred.get())) continue;
-        const bool associated = std::any_of(result.alternatives.begin(), result.alternatives.end(),
-            [app](const Application& other) { return g_app_info_equal(app, other.get()); });
-        if (!associated) result.others.emplace_back(G_APP_INFO(g_object_ref(app)), g_object_unref);
+        Application application{G_APP_INFO(g_object_ref(app)), g_object_unref};
+        choices.push_back(openWithRow(g_app_info_get_display_name(app), "", application, path));
     }
     g_list_free_full(installed, g_object_unref);
-    std::sort(result.others.begin(), result.others.end(), [](const Application& a, const Application& b) {
-        return g_utf8_collate(g_app_info_get_display_name(a.get()), g_app_info_get_display_name(b.get())) < 0;
+    std::stable_sort(choices.begin(), choices.end(), [](const MenuItem& a, const MenuItem& b) {
+        return g_utf8_collate(a.label.c_str(), b.label.c_str()) < 0;
     });
-    return result;
+    if (choices.empty()) choices.push_back(item(i18n::tr("No applications available"), "", Act::None, 0, false));
+    g.menu[static_cast<size_t>(g.menuSub)].children = std::move(choices);
+    g.menuOffset = 0;
+    g.subPending = -2;
+    g.dirty = true;
 }
 
 void addOpenActions(const Entry& e) {
@@ -426,26 +492,22 @@ void addOpenActions(const Entry& e) {
         g.menu.push_back(std::move(run));
     }
     const auto apps = fileApplications(e);
-    auto appRow = [&](const std::string& label, const char* icon, const Application& app) {
-        MenuItem row = item(label, icon, Act::OpenWith);
-        row.application = app;
-        row.target = e.path;
-        return row;
-    };
     if (apps.preferred) {
-        g.menu.push_back(appRow(std::string(i18n::tr("Open with")) + " " + g_app_info_get_display_name(apps.preferred.get()),
-                                "file", apps.preferred));
+        g.menu.push_back(openWithRow(std::string(i18n::tr("Open with")) + " " + g_app_info_get_display_name(apps.preferred.get()),
+                                     "file", apps.preferred, e.path));
     }
+    if (!e.regular) return;
     MenuItem other = item(i18n::tr("Open With…"), "window-frame", Act::None);
-    for (const auto& app : apps.alternatives)
-        other.children.push_back(appRow(g_app_info_get_display_name(app.get()), "", app));
-    if (!apps.alternatives.empty() && !apps.others.empty())
-        other.children.push_back(separatorItem());
-    for (const auto& app : apps.others)
-        other.children.push_back(appRow(g_app_info_get_display_name(app.get()), "", app));
-    if (!other.children.empty()) g.menu.push_back(std::move(other));
-    else if (!apps.preferred && !e.executable)
-        g.menu.push_back(item(i18n::tr("No application associated"), "file", Act::None, 0, false));
+    constexpr size_t kQuickApplications = 4;
+    for (size_t i = 0; i < std::min(kQuickApplications, apps.alternatives.size()); ++i) {
+        const auto& app = apps.alternatives[i];
+        other.children.push_back(openWithRow(g_app_info_get_display_name(app.get()), "", app, e.path));
+    }
+    if (!other.children.empty()) other.children.push_back(separatorItem());
+    auto browse = item(i18n::tr("Other Applications…"), "widget", Act::OtherApplications);
+    browse.target = e.path;
+    other.children.push_back(std::move(browse));
+    g.menu.push_back(std::move(other));
 }
 
 void launchApplication(GAppInfo* app, const std::string& path) {
@@ -602,7 +664,8 @@ void buildSideMenu(int side) {
 }
 void openMenu(bool onItem, int side = -2, bool address = false) {
     if (address) {
-        g.menu = {item(i18n::tr("Copy Folder Path"), "link", Act::CopyFolderPath)};
+        g.menu = {item(i18n::tr("Edit Location"), "pen", Act::EditLocation),
+                  item(i18n::tr("Copy Folder Path"), "link", Act::CopyFolderPath)};
         g.menuSub = -1; g.menuOffset = 0;
         g.subPending = -2;
         if (!inTrash()) addFolderActions(g.menu, false);
@@ -648,6 +711,7 @@ void runAct(const MenuItem& m) {
         case Act::Cut: copySelection(true); break;
         case Act::Copy: copySelection(false); break;
         case Act::CopyPath: copyText(selectedPaths()); break;
+        case Act::EditLocation: openAddress(); break;
         case Act::CopyFolderPath: copyText({pane().cwd}); break;
         case Act::CopyPlacePath:
             if (m.arg >= 0 && m.arg < static_cast<int>(g_sideRows.size()))
@@ -705,6 +769,48 @@ size_t nextChar(const std::string& s, size_t i) {
     return i;
 }
 bool modActive(const char* name) { return g.xkbState && xkb_state_mod_name_is_active(g.xkbState, name, XKB_STATE_MODS_EFFECTIVE) > 0; }
+
+bool addressKey(uint32_t key, xkb_keysym_t sym, bool ctrl, bool shift) {
+    if (sym == XKB_KEY_Escape) { g.focus = 0; g.dirty = true; return false; }
+    if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) { submitAddress(); return false; }
+    auto& p = pane();
+    textsel::Field field(p.address.s, p.address.cur, p.addressAnchor);
+    textsel::Key action = textsel::Key::None;
+    switch (xkb_keysym_to_lower(sym)) {
+        case XKB_KEY_Left: case XKB_KEY_KP_Left: action = textsel::Key::Left; break;
+        case XKB_KEY_Right: case XKB_KEY_KP_Right: action = textsel::Key::Right; break;
+        case XKB_KEY_Home: case XKB_KEY_KP_Home: action = textsel::Key::Home; break;
+        case XKB_KEY_End: case XKB_KEY_KP_End: action = textsel::Key::End; break;
+        case XKB_KEY_BackSpace: action = textsel::Key::Backspace; break;
+        case XKB_KEY_Delete: case XKB_KEY_KP_Delete: action = textsel::Key::Delete; break;
+        case XKB_KEY_a: if (ctrl) action = textsel::Key::SelectAll; break;
+        case XKB_KEY_c: if (ctrl) action = textsel::Key::Copy; break;
+        case XKB_KEY_x: if (ctrl) action = textsel::Key::Cut; break;
+        case XKB_KEY_v: if (ctrl) action = textsel::Key::Paste; break;
+    }
+    g.caretOn = true;
+    g.caretReset = Clock::now();
+    g.dirty = true;
+    if (action != textsel::Key::None) {
+        const auto result = textsel::handleKey(field, action, ctrl, shift);
+        if (result.wantCopy) copyText({result.copyText});
+        if (result.wantPaste) {
+            std::string clip;
+            if (clipboard::paste(clip) && clip.size() < PATH_MAX &&
+                g_utf8_validate(clip.data(), clip.size(), nullptr) && clip.find_first_of("\r\n") == std::string::npos)
+                field.insert(clip);
+        }
+        return result.repeat;
+    }
+    if (ctrl) return false;
+    char buf[16];
+    const int count = xkb_state_key_get_utf8(g.xkbState, key + 8, buf, sizeof buf);
+    if (count > 0 && count < static_cast<int>(sizeof buf) && static_cast<unsigned char>(buf[0]) >= 32 && buf[0] != 127) {
+        field.insert(std::string(buf, count));
+        return true;
+    }
+    return false;
+}
 
 // A key while a text field has the keyboard. True when it can repeat.
 bool fieldKey(uint32_t key, xkb_keysym_t sym, bool ctrl) {
@@ -783,6 +889,12 @@ bool handleKey(uint32_t key) {
         else if (!ctrl) toggleSplit();
         return false;
     }
+    if (g.dialog == Dlg::None && (sym == XKB_KEY_F6 || (ctrl && xkb_keysym_to_lower(sym) == XKB_KEY_l) || (alt && xkb_keysym_to_lower(sym) == XKB_KEY_d))) {
+        if (sym == XKB_KEY_F6 && g.focus == 3) { g.focus = 0; g.dirty = true; }
+        else openAddress();
+        return false;
+    }
+    if (g.focus == 3) return addressKey(key, sym, ctrl, shift);
     if (g.focus != 0) return fieldKey(key, sym, ctrl);
     if (ctrl) {
         switch (sym) {
@@ -827,7 +939,7 @@ bool handleKey(uint32_t key) {
         case XKB_KEY_space: if (pane().cursor >= 0 && pane().cursor < static_cast<int>(pane().view.size())) selectOnly(pane().cursor); return false;
         case XKB_KEY_F2: startRename(); return false;
         case XKB_KEY_F5: reload(true); return false;
-        case XKB_KEY_Escape: if (!pane().selected.empty()) { pane().selected.clear(); g.dirty = true; } else if (!pane().search.s.empty()) { pane().search = {}; pane().viewDirty = true; } return false;
+        case XKB_KEY_Escape: if (!pane().selected.empty()) { pane().selected.clear(); pane().selectionDirty = true; g.dirty = true; } else if (!pane().search.s.empty()) { pane().search = {}; pane().viewDirty = true; } return false;
         default: break;
     }
     char buf[16];  // typing a letter starts the search (no need to click the field first)
@@ -870,6 +982,7 @@ void updateLasso() {
     pane().lassoY1 = std::clamp(g.py - pane().content.y, 0.0, pane().content.h) + (horizontal() ? 0 : pane().scroll);
     const double x0 = std::min(pane().lassoX0, pane().lassoX1), x1 = std::max(pane().lassoX0, pane().lassoX1), y0 = std::min(pane().lassoY0, pane().lassoY1), y1 = std::max(pane().lassoY0, pane().lassoY1);
     pane().selected = pane().lassoBase;
+    pane().selectionDirty = true;
     for (int i = 0; i < static_cast<int>(pane().view.size()); i++) {
         const Rect r = itemRect(i);
         if (horizontal() ? r.x > x1 : r.y > y1) break;
@@ -887,7 +1000,7 @@ void updateCursor() {
         return;
     }
     switch (g.hoverId) {
-        case SearchField: case DialogField: shape = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT; break;
+        case SearchField: case DialogField: case AddressField: case AddressBar: shape = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT; break;
         case None: case Empty: case Scrim: case SideEmpty: break;
         case ScrollThumb: case ScrollTrack: break;  // (an arrow over the scroll bar, as everywhere)
         case MenuRow: if (g.hoverArg >= 0) shape = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER; break;
@@ -944,6 +1057,7 @@ void activateMenuRow(int arg) {
     if (!m || !m->enabled) return;
     if (!m->children.empty()) { if (g.menuSub != arg) g.menuOffset = 0; g.menuSub = arg; g.dirty = true; return; }  // (a click on a row with a second panel opens it)
     const MenuItem copy = *m;
+    if (copy.act == Act::OtherApplications) { showOtherApplications(copy.target); return; }
     closeMenu();
     runAct(copy);
 }
@@ -965,15 +1079,15 @@ void onClick(uint32_t button) {
     }
     focusPane(g.hoverPane);
     if (g.hoverId == Item && (g.hoverArg < 0 || g.hoverArg >= static_cast<int>(pane().view.size()))) return;
-    if (g.hoverId != SearchField && g.hoverId != SearchClear && g.focus != 0) { g.focus = 0; g.dirty = true; }
+    if (g.hoverId != SearchField && g.hoverId != SearchClear && g.hoverId != AddressField && g.hoverId != BtnGo && g.focus != 0) { g.focus = 0; g.dirty = true; }
     if (button == 0x113) { goBack(); return; }     // the "back" button of the mouse
     if (button == 0x114) { goForward(); return; }  // and the "forward" one
     if (right) {
         if (g.hoverId == Item) { if (!pane().selected.count(entryAt(g.hoverArg).path)) selectOnly(g.hoverArg); openMenu(true); }
-        else if (g.hoverId == AddressBar || g.hoverId == Crumb || g.hoverId == BtnCopyPath) openMenu(false, -2, true);
+        else if (g.hoverId == AddressBar || g.hoverId == AddressField || g.hoverId == Crumb || g.hoverId == BtnCopyPath) openMenu(false, -2, true);
         else if (g.hoverId == PlaceRow) openMenu(false, g.hoverArg);
         else if (g.hoverId == SideEmpty) openMenu(false, -1);
-        else if (g.hoverId == Empty || g.hoverId == None) { pane().selected.clear(); openMenu(false); }
+        else if (g.hoverId == Empty || g.hoverId == None) { pane().selected.clear(); pane().selectionDirty = true; openMenu(false); }
         return;
     }
     if (button != 0x110) return;
@@ -986,6 +1100,20 @@ void onClick(uint32_t button) {
         case BtnSplit: toggleSplit(); break;
         case BtnHidden: toggleHidden(); break;
         case BtnCopyPath: copyText({pane().cwd}); break;
+        case AddressBar: openAddress(false); break;
+        case AddressField: {
+            Pane& p = pane();
+            textsel::Field field(p.address.s, p.address.cur, p.addressAnchor);
+            PangoLayout* layout = addressLayout(g_measure, p.address.s);
+            field.setCaret(textsel::indexAtX(layout, p.address.s, g.px - p.addressTextX + p.addressScroll),
+                         modActive(XKB_MOD_NAME_SHIFT));
+            g_object_unref(layout);
+            g.caretOn = true;
+            g.caretReset = Clock::now();
+            g.dirty = true;
+            break;
+        }
+        case BtnGo: submitAddress(); break;
         case BtnSort:
             if (g.hoverArg >= 10) setSort(static_cast<Sort>(g.hoverArg - 10));
             else openViewMenu(true);
@@ -994,7 +1122,11 @@ void onClick(uint32_t button) {
         case SearchClear: pane().search = {}; pane().viewDirty = true; g.dirty = true; break;
         case Crumb: {
             const auto& paths = pane().crumbPaths;
-            if (g.hoverArg >= 0 && g.hoverArg < static_cast<int>(paths.size())) navigate(paths[static_cast<size_t>(g.hoverArg)]);
+            if (g.hoverArg >= 0 && g.hoverArg < static_cast<int>(paths.size())) {
+                const auto& path = paths[static_cast<size_t>(g.hoverArg)];
+                if (path == pane().cwd) openAddress(false);
+                else navigate(path);
+            }
             break;
         }
         case PlaceRow:  // it opens when the button is let go; held for a moment, it is picked up instead (see tick)
@@ -1011,9 +1143,11 @@ void onClick(uint32_t button) {
             dragScrollTo();
             break;
         case StatusCancel: g.worker.cancelAll(); break;
+        case DiskSpace: g.spaceAsPercent = !g.spaceAsPercent; g.dirty = true; break;
         case Empty:
             pane().lassoBase = modActive(XKB_MOD_NAME_CTRL) || modActive(XKB_MOD_NAME_SHIFT) ? pane().selected : std::set<std::string>{};
             pane().selected = pane().lassoBase;
+            pane().selectionDirty = true;
             pane().lasso = true;
             pane().lassoX0 = std::clamp(g.px - pane().content.x, 0.0, pane().content.w) + (horizontal() ? pane().scroll : 0);
             pane().lassoY0 = std::clamp(g.py - pane().content.y, 0.0, pane().content.h) + (horizontal() ? 0 : pane().scroll);
@@ -1196,6 +1330,51 @@ bool connectWayland() {
     return true;
 }
 
+void updateStatus(Clock::time_point now) {
+    Pane& p = pane();
+    const auto result = p.statusProbe->take();
+    if (result.serial != 0 && result.serial == p.statusSerial) {
+        p.space = result.space;
+        p.spaceAt = now;
+        p.statusPending = false;
+        if (result.measured) {
+            p.selectionBytes = result.bytes;
+            p.sizePartial = result.partial;
+            p.sizePending = false;
+        }
+        g.dirty = true;
+    }
+    if (p.cwd.empty() || p.lasso) return;
+
+    StatusRequest request;
+    if (p.selectionDirty) {
+        p.selectionDirty = false;
+        p.selectionFolders = p.selectionFiles = 0;
+        p.selectionName.clear();
+        p.selectionType.clear();
+        p.sizePartial = false;
+        p.selectionBytes = 0;
+        for (const auto* entry : selectedEntries()) {
+            if (p.selectionFolders + p.selectionFiles == 0) {
+                p.selectionName = entry->name;
+                p.selectionType = entryType(*entry);
+            }
+            if (entry->dir) ++p.selectionFolders;
+            else ++p.selectionFiles;
+            if (entry->dir && !entry->link) request.folders.push_back(entry->path);
+            else if (entry->regular || entry->link) p.selectionBytes += entry->size;
+        }
+        p.sizePending = !request.folders.empty();
+        request.bytes = p.selectionBytes;
+        request.measure = p.sizePending;
+        g.dirty = true;
+    } else if (p.statusPending || now - p.spaceAt < std::chrono::seconds(5)) return;
+    request.serial = ++p.statusSerial;
+    request.path = p.cwd;
+    p.statusPending = true;
+    p.statusProbe->request(std::move(request));
+}
+
 // Once per turn of the loop: what the threads finished, what changed on disk, the colours, the repeat of a key.
 void tick() {
     const auto now = Clock::now();
@@ -1210,6 +1389,7 @@ void tick() {
         if (pane().lister->take(l) && l.generation == pane().generation) applyListing(l);
         if (pane().band.step()) g.dirty = true;
         if (pane().viewDirty) rebuildView();
+        updateStatus(now);
     }
     g.hitPane = -1;
     bool refresh[2]{};
@@ -1350,6 +1530,7 @@ int run(int argc, char** argv) {
     g_wakeFd = wake[1];
     for (Pane& p : g.panes) {
         p.lister->wakeFd = wake[1];
+        p.statusProbe->wakeFd = wake[1];
         p.inotifyFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     }
     g.thumbs.start(wake[1]);

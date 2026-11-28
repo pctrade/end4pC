@@ -60,7 +60,68 @@ void drawField(cairo_t* cr, const Rect& r, int id, const Field& f, int which, co
 }
 
 // ---- the header ------------------------------------------------------------------------------------------------------------------------
+PangoLayout* addressLayout(PangoLayout* basis, const std::string& address) {
+    PangoLayout* layout = pango_layout_new(pango_layout_get_context(basis));
+    setFont(layout, 15, false);
+    pango_layout_set_auto_dir(layout, false);
+    pango_layout_set_single_paragraph_mode(layout, true);
+    pango_layout_set_text(layout, address.c_str(), -1);
+    return layout;
+}
+
+void drawAddress(cairo_t* cr, const Rect& r) {
+    Pane& p = pane();
+    src(cr, color("surface_container_highest"));
+    rrect(cr, r.x, r.y, r.w, r.h, r.h / 2);
+    cairo_fill_preserve(cr);
+    src(cr, color("primary"));
+    cairo_set_line_width(cr, 1.5);
+    cairo_stroke(cr);
+
+    const Rect go{r.x + r.w - r.h, r.y, r.h, r.h};
+    const Rect field{r.x, r.y, r.w - go.w, r.h};
+    hot(field, AddressField);
+    const bool hovered = hot(go, BtnGo);
+    icon(cr, "alt-arrow-right", go.x + (go.w - 20) / 2, go.y + (go.h - 20) / 2, 20,
+         color(hovered ? "primary" : "on_surface_variant"));
+    p.addressTextX = field.x + 12;
+    const double width = std::max(1.0, field.w - 16);
+    PangoLayout* layout = addressLayout(g_measure, p.address.s);
+    textsel::Field selection(p.address.s, p.address.cur, p.addressAnchor);
+    const double caret = textsel::xAtIndex(layout, selection.caret);
+    if (caret < p.addressScroll) p.addressScroll = caret;
+    if (caret > p.addressScroll + width - 2) p.addressScroll = caret - width + 2;
+    int textW = 0, textH = 0;
+    pango_layout_get_pixel_size(layout, &textW, &textH);
+    p.addressScroll = std::clamp(p.addressScroll, 0.0, std::max(0.0, textW - width + 2));
+    const double x = p.addressTextX - p.addressScroll, y = r.y + (r.h - textH) / 2;
+    cairo_save(cr);
+    cairo_rectangle(cr, p.addressTextX, r.y + 2, width, r.h - 4);
+    cairo_clip(cr);
+    if (selection.hasSel()) {
+        int* ranges = nullptr;
+        int count = 0;
+        pango_layout_line_get_x_ranges(pango_layout_get_line_readonly(layout, 0), selection.lo(), selection.hi(), &ranges, &count);
+        src(cr, color("secondary_container"));
+        for (int i = 0; i < count; ++i)
+            cairo_rectangle(cr, x + ranges[2 * i] / double(PANGO_SCALE), y,
+                            (ranges[2 * i + 1] - ranges[2 * i]) / double(PANGO_SCALE), textH);
+        cairo_fill(cr);
+        g_free(ranges);
+    }
+    src(cr, color("on_surface"));
+    cairo_move_to(cr, x, y);
+    pango_cairo_show_layout(cr, layout);
+    if (g.caretOn && !selection.hasSel()) {
+        cairo_rectangle(cr, x + caret, y, 1.5, textH);
+        cairo_fill(cr);
+    }
+    cairo_restore(cr);
+    g_object_unref(layout);
+}
+
 void drawCrumbs(cairo_t* cr, const Rect& r) {
+    if (g.focus == 3 && (!g.split || g.hitPane == g.activePane)) { drawAddress(cr, r); return; }
     src(cr, color("surface_container_high"));
     rrect(cr, r.x, r.y, r.w, r.h, r.h / 2);
     cairo_fill(cr);
@@ -215,7 +276,9 @@ void drawSidebar(cairo_t* cr, const Rect& card) {
 
 // ---- the files -------------------------------------------------------------------------------------------------------------------------
 // The picture of a file in a square: its thumbnail (images), or a coloured tile with the icon of its kind.
+constexpr double kHiddenInk = 0.48;
 void drawTile(cairo_t* cr, const Entry& e, double x, double y, double size, double radius, bool selectedNow) {
+    const double opacity = e.hidden ? kHiddenInk : 1.0;
     const auto [bgName, fgName] = tileColors(e.kind);
     const bool isPicture = e.kind == Kind::Image && e.regular && e.size < 80u * 1024 * 1024;
     cairo_surface_t* th = isPicture ? g.thumbs.get(e.path) : nullptr;
@@ -234,25 +297,38 @@ void drawTile(cairo_t* cr, const Entry& e, double x, double y, double size, doub
     }
     // The tile of the kind: for a picture still being made it is a quiet neutral square (not the loud colour of the kinds), so the picture arriving is gentle.
     if (!th || alpha < 1) {
-        src(cr, color(isPicture ? "surface_container_highest" : selectedNow && e.kind != Kind::Folder ? "surface_container_highest" : bgName));
+        src(cr, color(isPicture ? "surface_container_highest" : selectedNow && e.kind != Kind::Folder ? "surface_container_highest" : bgName), opacity);
         rrect(cr, x, y, size, size, radius);
         cairo_fill(cr);
         const int is = static_cast<int>(size * 0.5);
-        icon(cr, iconFor(e.kind), x + (size - is) / 2.0, y + (size - is) / 2.0, is, color(isPicture ? "on_surface_variant" : fgName), isPicture ? 0.35 : 1.0);
+        icon(cr, iconFor(e.kind), x + (size - is) / 2.0, y + (size - is) / 2.0, is, color(isPicture ? "on_surface_variant" : fgName), (isPicture ? 0.35 : 1.0) * opacity);
     }
-    if (!th) return;
-    cairo_save(cr);
-    rrect(cr, x, y, size, size, radius);
-    cairo_clip(cr);
-    src(cr, color("surface_container_highest"));
-    cairo_paint_with_alpha(cr, alpha);
-    const double w = cairo_image_surface_get_width(th), h = cairo_image_surface_get_height(th), sc = std::max(size / w, size / h);
-    cairo_translate(cr, x + size / 2, y + size / 2);
-    cairo_scale(cr, sc, sc);
-    cairo_set_source_surface(cr, th, -w / 2, -h / 2);
-    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
-    cairo_paint_with_alpha(cr, alpha);
-    cairo_restore(cr);
+    if (th) {
+        cairo_save(cr);
+        rrect(cr, x, y, size, size, radius);
+        cairo_clip(cr);
+        src(cr, color("surface_container_highest"));
+        cairo_paint_with_alpha(cr, alpha * opacity);
+        const double w = cairo_image_surface_get_width(th), h = cairo_image_surface_get_height(th), sc = std::max(size / w, size / h);
+        cairo_translate(cr, x + size / 2, y + size / 2);
+        cairo_scale(cr, sc, sc);
+        cairo_set_source_surface(cr, th, -w / 2, -h / 2);
+        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+        cairo_paint_with_alpha(cr, alpha * opacity);
+        cairo_restore(cr);
+    }
+    // A corner emblem makes links recognizable even when they use the same
+    // folder tile as their destination.
+    if (e.link) {
+        const int emblem = std::clamp(static_cast<int>(size * 0.44), 13, 23);
+        const int glyph = emblem - 4;
+        const double bx = x + size - emblem, by = y + size - emblem;
+        const Color fg = color("on_secondary_container");
+        src(cr, color("secondary_container"));
+        cairo_arc(cr, bx + emblem / 2.0, by + emblem / 2.0, emblem / 2.0, 0, 2 * M_PI);
+        cairo_fill(cr);
+        icon(cr, "arrow-right-up", bx + 2, by + 2, glyph, fg);
+    }
 }
 
 // The pictures a little way above and below what is on screen are asked for first, so they are ready by the time the wheel brings them in
@@ -310,10 +386,10 @@ void drawList(cairo_t* cr, const Rect& area) {
         if (sel || hov) { src(cr, sel ? mix(color("on_surface"), color("secondary_container"), hov ? 0.06 : 0.0) : mix(color("on_surface"), base, 0.07)); rrect(cr, row.x, row.y, row.w, row.h, 16); cairo_fill(cr); }
         if (cur && !sel) { src(cr, color("outline_variant")); cairo_set_line_width(cr, 1.5); rrect(cr, row.x + 0.75, row.y + 0.75, row.w - 1.5, row.h - 1.5, 15); cairo_stroke(cr); }
         drawTile(cr, e, row.x + 14, row.y + 6, 36, 12, sel);
-        text(cr, e.name, row.x + 62, row.y + (rowH - textHeight(e.name, 15, false)) / 2, 15, false, fg, e.hidden ? 0.6 : 1, (wide ? sizeX - 12 : row.x + row.w - 20) - (row.x + 62), 0);
+        text(cr, e.name, row.x + 62, row.y + (rowH - textHeight(e.name, 15, false)) / 2, 15, false, fg, e.hidden ? kHiddenInk : 1, (wide ? sizeX - 12 : row.x + row.w - 20) - (row.x + 62), 0);
         if (wide) {
-            if (!e.dir) text(cr, formatSize(e.size), sizeX, row.y + (rowH - 18) / 2, 13, false, fg, 0.75, sizeW, 2);
-            text(cr, formatDate(e.mtime), dateX, row.y + (rowH - 18) / 2, 13, false, fg, 0.75, dateW, 2);
+            if (!e.dir) text(cr, formatSize(e.size), sizeX, row.y + (rowH - 18) / 2, 13, false, fg, e.hidden ? kHiddenInk : 0.75, sizeW, 2);
+            text(cr, formatDate(e.mtime), dateX, row.y + (rowH - 18) / 2, 13, false, fg, e.hidden ? kHiddenInk : 0.75, dateW, 2);
         }
     }
     cairo_restore(cr);
@@ -348,7 +424,7 @@ void drawGrid(cairo_t* cr, const Rect& area) {
             if (cur && !sel) { src(cr, color("outline_variant")); cairo_set_line_width(cr, 1.5); rrect(cr, cell.x + 0.75, cell.y + 0.75, cell.w - 1.5, cell.h - 1.5, 23); cairo_stroke(cr); }
             drawTile(cr, e, cell.x + (cell.w - tile) / 2, cell.y + 10, tile, 26, sel);
             const Color fg = color(sel ? "on_secondary_container" : "on_surface");
-            text(cr, e.name, cell.x + 6, cell.y + 10 + tile + 8, 13, false, fg, e.hidden ? 0.6 : 1, cell.w - 12, 1, true, 2);
+            text(cr, e.name, cell.x + 6, cell.y + 10 + tile + 8, 13, false, fg, e.hidden ? kHiddenInk : 1, cell.w - 12, 1, true, 2);
         }
     cairo_restore(cr);
 }
@@ -393,20 +469,93 @@ void drawCompact(cairo_t* cr, const Rect& area) {
             }
             drawTile(cr, e, cell.x + 5, cell.y + 5, 22, 6, selected);
             text(cr, e.name, cell.x + 34, cell.y + (cell.h - textHeight(e.name, 13, false)) / 2, 13, false,
-                 color(selected ? "on_secondary_container" : "on_surface"), e.hidden ? 0.6 : 1, cell.w - 40);
+                 color(selected ? "on_secondary_container" : "on_surface"), e.hidden ? kHiddenInk : 1, cell.w - 40);
         }
     }
     cairo_restore(cr);
 }
 
+std::string hoveredType(const Entry& entry) {
+    static std::string lastPath, lastType;
+    if (entry.path != lastPath) {
+        lastPath = entry.path;
+        lastType = entryType(entry);
+    }
+    return lastType;
+}
+
+std::string statusCounts(size_t folders, size_t files) {
+    std::string label;
+    if (folders) label = std::to_string(folders) + " " + i18n::tr(folders == 1 ? "folder" : "folders");
+    if (files || label.empty()) {
+        if (!label.empty()) label += ", ";
+        label += std::to_string(files) + " " + i18n::tr(files == 1 ? "file" : "files");
+    }
+    return label;
+}
+
+std::string diskSpaceLabel(const fs::space_info& space, bool percent) {
+    if (percent) {
+        const double ratio = std::clamp(double(space.available) / space.capacity, 0.0, 1.0);
+        return std::to_string(static_cast<int>(std::lround(ratio * 100))) + "% " + i18n::tr("free");
+    }
+    gchar* size = g_format_size(space.available);
+    std::string label = std::string(size) + " " + i18n::tr("free");
+    g_free(size);
+    return label;
+}
+
 void drawStatus(cairo_t* cr, const Rect& bar) {
-    std::string left;
-    if (pane().loading) left = i18n::tr("Loading…");
-    else if (!pane().selected.empty()) {
-        uint64_t total = 0;
-        for (int i : pane().view) if (pane().selected.count(pane().entries[static_cast<size_t>(i)].path)) total += pane().entries[static_cast<size_t>(i)].size;
-        left = std::string(i18n::tr("Selected")) + ": " + std::to_string(pane().selected.size()) + (total > 0 ? " · " + formatSize(total) : "");
-    } else left = std::string(i18n::tr("Items")) + ": " + std::to_string(pane().view.size());
+    const Pane& p = pane();
+    std::string summary;
+    if (p.loading) summary = i18n::tr("Loading…");
+    else if (p.selectionFolders + p.selectionFiles > 0) {
+        if (p.selectionFolders + p.selectionFiles == 1)
+            summary = p.selectionName + " · " + p.selectionType;
+        else summary = statusCounts(p.selectionFolders, p.selectionFiles) + " " + i18n::tr("selected");
+        if (p.sizePending) summary += " · " + std::string(i18n::tr("Calculating size…"));
+        else summary += " (" + std::string(p.sizePartial ? "≥ " : "") + formatSize(p.selectionBytes) + ")";
+    } else if (g.hoverId == Item && g.hoverPane == g.hitPane && g.hoverArg >= 0 &&
+               g.hoverArg < static_cast<int>(p.view.size())) {
+        const Entry& entry = entryAt(g.hoverArg);
+        if (entry.regular) summary = formatSize(entry.size) + " · ";
+        summary += hoveredType(entry) + " · " + entry.name;
+    } else summary = statusCounts(p.visibleFolders, p.view.size() - p.visibleFolders);
+
+    constexpr double inset = 8, labelGap = 6, sectionGap = 12, meterHeight = 6;
+    const double left = bar.x + inset, right = bar.x + bar.w - inset;
+    const double center = bar.y + bar.h / 2;
+    const Color fg = color("on_surface_variant");
+    double summaryRight = right;
+    if (p.space.capacity > 0 && p.space.capacity != static_cast<uintmax_t>(-1)) {
+        const double ratio = std::clamp(double(p.space.available) / p.space.capacity, 0.0, 1.0);
+        const std::string label = diskSpaceLabel(p.space, g.spaceAsPercent);
+        const double labelW = std::min(textWidth(label, 12, false), (right - left) * 0.4);
+        const double labelX = right - labelW;
+        const double trackW = std::clamp(bar.w * 0.14, 30.0, 82.0);
+        const double meterX = labelX - labelGap - trackW;
+        const double meterY = center - meterHeight / 2;
+        summaryRight = meterX - sectionGap;
+        if (hot({meterX - 4, bar.y, right - meterX + 8, bar.h}, DiskSpace)) {
+            src(cr, color("on_surface"), 0.07);
+            rrect(cr, meterX - 4, bar.y + 2, right - meterX + 8, bar.h - 4, 8);
+            cairo_fill(cr);
+        }
+        src(cr, color("surface_container_highest"));
+        rrect(cr, meterX, meterY, trackW, meterHeight, meterHeight / 2);
+        cairo_fill(cr);
+        if (ratio > 0) {
+            src(cr, color("primary"));
+            rrect(cr, meterX, meterY, trackW * ratio, meterHeight, meterHeight / 2);
+            cairo_fill(cr);
+        }
+        text(cr, label, labelX, center - textHeight(label, 12, false) / 2, 12, false, fg, 1, labelW);
+    }
+    if (summaryRight > left)
+        text(cr, summary, left, center - textHeight(summary, 13, false) / 2, 13, false, fg, 1, summaryRight - left);
+}
+
+void drawOperation(cairo_t* cr, const Rect& bar) {
     bool busy;
     std::string label;
     double fraction;
@@ -419,10 +568,8 @@ void drawStatus(cairo_t* cr, const Rect& bar) {
         done = g.worker.done;
         total = g.worker.total;
     }
-    text(cr, left, bar.x + 12, bar.y + (bar.h - 18) / 2, 13, false, color("on_surface_variant"), 0.9, busy ? bar.w * 0.28 : bar.w - 24);
     if (!busy) return;
-    // The progress: a real one when ffmpeg says how far it is, a bar that moves otherwise.
-    const double bx = bar.x + bar.w * 0.34, bw = bar.w * 0.66 - 56, by = bar.y + bar.h / 2;
+    const double bx = bar.x + 8, bw = bar.w - 60, by = bar.y + bar.h / 2;
     text(cr, label + (total > 1 ? "  " + std::to_string(std::min(done + 1, total)) + "/" + std::to_string(total) : ""), bx, bar.y + 2, 12, false, color("on_surface_variant"), 0.95, bw);
     src(cr, color("secondary_container"));
     rrect(cr, bx, by + 6, bw, 6, 3);
@@ -512,8 +659,14 @@ void drawContent(cairo_t* cr, const Rect& card) {
             cairo_stroke(cr);
         }
     }
-    const Rect statusBar{card.x + 12, card.y + card.h - 44, card.w - 24, 40};
-    const Rect area{card.x + 12, card.y + header, card.w - 24, card.h - header - 44};
+    bool operation = false;
+    if (!g.split || g.hitPane == g.activePane) {
+        std::lock_guard<std::mutex> lock(g.worker.mutex);
+        operation = g.worker.busy || g.worker.running;
+    }
+    const double footer = operation ? 74 : 34;
+    const Rect statusBar{card.x + 12, card.y + card.h - footer, card.w - 24, 30};
+    const Rect area{card.x + 12, card.y + header, card.w - 24, card.h - header - footer};
     p.content = area;
     hot(area, Empty);
     if (p.view.empty()) {
@@ -525,9 +678,8 @@ void drawContent(cairo_t* cr, const Rect& card) {
     else drawList(cr, area);
     drawScrollbar(cr, area);
     drawLasso(cr);
-    if (!g.split || g.hitPane == g.activePane) drawStatus(cr, statusBar);
-    else text(cr, std::string(i18n::tr("Items")) + ": " + std::to_string(p.view.size()),
-              statusBar.x + 12, statusBar.y + 11, 13, false, color("on_surface_variant"), 0.9, statusBar.w - 24);
+    drawStatus(cr, statusBar);
+    if (operation) drawOperation(cr, {statusBar.x, statusBar.y + statusBar.h, statusBar.w, 40});
 }
 
 // ---- the menu, the dialog, the toast ---------------------------------------------------------------------------------------------------
@@ -548,6 +700,45 @@ int menuOffsetLimit(const std::vector<MenuItem>& rows, int height) {
     return first;
 }
 // Draws one panel; the rows are hit areas (arg: index, 1000 + index inside the second panel).
+cairo_surface_t* menuAppIcon(const MenuItem& row, int size) {
+    if (!row.application) return nullptr;
+    const int pixels = hidpi::bufferExtent(size, g_scale);
+    if (row.appIconSize == pixels) return row.appIcon.get();
+    row.appIconSize = pixels;
+    row.appIcon.reset();
+
+    GIcon* icon = g_app_info_get_icon(row.application.get());
+    std::string path;
+    if (G_IS_FILE_ICON(icon)) {
+        gchar* file = g_file_get_path(g_file_icon_get_file(G_FILE_ICON(icon)));
+        if (file) { path = file; g_free(file); }
+    } else if (G_IS_THEMED_ICON(icon)) {
+        for (const gchar* const* name = g_themed_icon_get_names(G_THEMED_ICON(icon)); name && *name; ++name) {
+            path = icon_theme::lookup(*name, pixels, homeDir());
+            if (!path.empty()) break;
+        }
+    }
+    if (path.ends_with(".svg")) {
+        if (RsvgHandle* svg = rsvg_handle_new_from_file(path.c_str(), nullptr)) {
+            auto* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pixels, pixels);
+            auto* cr = cairo_create(surface);
+            const RsvgRectangle box{0, 0, double(pixels), double(pixels)};
+            if (rsvg_handle_render_document(svg, cr, &box, nullptr))
+                row.appIcon = {cairo_surface_reference(surface), cairo_surface_destroy};
+            cairo_destroy(cr);
+            cairo_surface_destroy(surface);
+            g_object_unref(svg);
+        }
+    } else if (!path.empty()) {
+        GdkPixbuf* image = gdk_pixbuf_new_from_file_at_scale(path.c_str(), pixels, pixels, TRUE, nullptr);
+        if (image) {
+            row.appIcon = {surfaceFromPixbuf(image), cairo_surface_destroy};
+            g_object_unref(image);
+        }
+    }
+    return row.appIcon.get();
+}
+
 void drawPanel(cairo_t* cr, const Rect& r, const std::vector<MenuItem>& items, int argBase, int offset = 0) {
     hot(r, MenuRow, -1);  // (the panel itself: a click on its background must not reach what is under it)
     src(cr, color("surface_container_high"));
@@ -571,8 +762,20 @@ void drawPanel(cairo_t* cr, const Rect& r, const std::vector<MenuItem>& items, i
         if (hov || open) { src(cr, color("on_surface"), 0.08); rrect(cr, row.x, row.y, row.w, row.h, 14); cairo_fill(cr); }
         const Color fg = color("on_surface");
         const double a = m.enabled ? 1.0 : 0.38;
-        if (m.icon[0]) icon(cr, m.icon, row.x + 12, row.y + (row.h - 22) / 2, 22, color("on_surface_variant"), a);
-        text(cr, m.label, row.x + (m.icon[0] ? 46 : 16), row.y + (row.h - textHeight(m.label, 15, false)) / 2, 15, false, fg, a, row.w - (m.icon[0] ? 46 : 16) - (m.children.empty() && !m.checked ? 12 : 36));
+        constexpr int size = 22;
+        cairo_surface_t* appIcon = menuAppIcon(m, size);
+        if (appIcon) {
+            const int w = cairo_image_surface_get_width(appIcon), h = cairo_image_surface_get_height(appIcon);
+            const double scale = size / static_cast<double>(std::max(w, h));
+            cairo_save(cr);
+            cairo_translate(cr, row.x + 12 + (size - w * scale) / 2, row.y + (row.h - h * scale) / 2);
+            cairo_scale(cr, scale, scale);
+            cairo_set_source_surface(cr, appIcon, 0, 0);
+            cairo_paint_with_alpha(cr, a);
+            cairo_restore(cr);
+        } else if (m.icon[0]) icon(cr, m.icon, row.x + 12, row.y + (row.h - size) / 2, size, color("on_surface_variant"), a);
+        const int lead = appIcon || m.icon[0] ? 46 : 16;
+        text(cr, m.label, row.x + lead, row.y + (row.h - textHeight(m.label, 15, false)) / 2, 15, false, fg, a, row.w - lead - (m.children.empty() && !m.checked ? 12 : 36));
         if (!m.children.empty() || m.checked)
             icon(cr, m.checked ? "check-circle" : "alt-arrow-right", row.x + row.w - 30, row.y + (row.h - 20) / 2, 20, color(m.checked ? "primary" : "on_surface_variant"), a);
         y += kMenuRowH;
