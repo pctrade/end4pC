@@ -7,6 +7,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <librsvg/rsvg.h>
 #include <pango/pangocairo.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <langinfo.h>
 #include <limits.h>
@@ -46,6 +47,28 @@
 
 namespace {
 struct Color { double r = 0, g = 0, b = 0; };
+
+// END4PC_LOCK_TIMING=1: says on stderr how long after main() began each step of coming up was reached, to see where the time of a lock goes.
+std::chrono::steady_clock::time_point g_t0;
+bool g_timing = false;
+void mark(const char* what) {
+    if (!g_timing) return;
+    std::fprintf(stderr, "end4pC-lock: %8.1f ms  %s\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g_t0).count(), what);
+}
+// What came before main(): the exec and the dynamic linking (from the start time of the process in /proc, which counts in ticks of 10 ms).
+void markBeforeMain() {
+    if (!g_timing) return;
+    std::ifstream f("/proc/self/stat");
+    std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    size_t p = s.rfind(')');
+    if (p == std::string::npos) return;
+    for (int i = 0; i < 20 && p != std::string::npos; i++) p = s.find(' ', p + 1);  // (the start time is the 22nd field, the 20th after the name)
+    timespec ts{};
+    const long hz = sysconf(_SC_CLK_TCK);
+    if (p == std::string::npos || hz <= 0 || clock_gettime(CLOCK_BOOTTIME, &ts) != 0) return;
+    const double began = std::strtod(s.c_str() + p + 1, nullptr) * 1000.0 / hz;
+    std::fprintf(stderr, "end4pC-lock: %8.0f ms  before main (exec and dynamic linking, to the nearest %ld ms)\n", ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6 - began, 1000 / hz);
+}
 
 std::string homeDir() { const char* h = std::getenv("HOME"); return h ? h : ""; }
 std::string stateDir() {
@@ -186,7 +209,10 @@ cairo_surface_t* iconMask(const std::string& name, int size, bool solid = false)
     const std::string key = name + "/" + std::to_string(size) + (solid ? "s" : "");
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     cairo_surface_t* mask = nullptr;
-    for (const char* style : solid ? std::initializer_list<const char*>{"bold", "outline", "broken"} : std::initializer_list<const char*>{"broken", "outline", "bold"}) {
+    // (two arrays that last: the lists written inside the `for` were gone before its first turn, unless the compiler follows C++23 there)
+    static const char* const kSolidFirst[] = {"bold", "outline", "broken"};
+    static const char* const kBrokenFirst[] = {"broken", "outline", "bold"};
+    for (const char* style : solid ? kSolidFirst : kBrokenFirst) {
         const std::string path = assetsDir() + "/icons/" + style + "/" + name + ".svg";
         if (access(path.c_str(), R_OK) != 0) continue;
         RsvgHandle* h = rsvg_handle_new_from_file(path.c_str(), nullptr);
@@ -255,6 +281,140 @@ cairo_surface_t* loadCover(const std::string& path, int w, int h) {
     return out;
 }
 
+// ---- the pictures, kept decoded -----------------------------------------------------------------------------------------------------------
+// Reading the wallpaper (and the avatar) from its PNG or JPEG is most of what a lock waits for before its first frame. So what loadCover() gives is
+// written once to the cache folder, as the very pixels cairo paints, and the next lock reads them back: no decoding, no scaling. The file says which
+// picture it came from (path, time, size), so another wallpaper, or the same file changed, is decoded again. Nothing stays in memory between locks.
+// END4PC_LOCK_NOCACHE=1 turns it off (to compare).
+struct PixHeader {
+    char magic[8];
+    uint32_t version, w, h, stride;
+    uint64_t key;
+};
+constexpr char kPixMagic[8] = {'e', '4', 'l', 'o', 'c', 'k', 'p', 'x'};
+constexpr uint32_t kPixVersion = 1;
+constexpr const char* kBgPrefix = "lock-bg-";
+constexpr const char* kPixSuffix = ".bgra";
+bool g_pixCache = true;
+std::atomic<int> g_pixWriting{0};  // the files being written now
+
+// Which picture, at which size: 0 when the file is not there.
+uint64_t sourceKey(const std::string& path, int w, int h) {
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) return 0;
+    uint64_t k = 1469598103934665603ull;  // (FNV-1a)
+    const auto mix = [&k](const void* p, size_t n) {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; i++) k = (k ^ b[i]) * 1099511628211ull;
+    };
+    const int64_t facts[] = {int64_t(st.st_mtim.tv_sec), int64_t(st.st_mtim.tv_nsec), int64_t(st.st_size), int64_t(st.st_ino), w, h};
+    mix(path.data(), path.size());
+    mix(facts, sizeof facts);
+    return k ? k : 1;
+}
+
+cairo_surface_t* readPixels(const std::string& file, uint64_t key, int w, int h) {
+    const int fd = open(file.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return nullptr;
+    cairo_surface_t* s = nullptr;
+    PixHeader hd{};
+    struct stat st {};
+    const int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, w);
+    const size_t total = static_cast<size_t>(stride) * h;
+    // (a file that is not whole, or of another picture or size, is not used: the size is checked before a byte of it is read into the picture)
+    if (read(fd, &hd, sizeof hd) == static_cast<ssize_t>(sizeof hd) && std::memcmp(hd.magic, kPixMagic, sizeof kPixMagic) == 0 && hd.version == kPixVersion &&
+        hd.w == static_cast<uint32_t>(w) && hd.h == static_cast<uint32_t>(h) && hd.stride == static_cast<uint32_t>(stride) && hd.key == key &&
+        fstat(fd, &st) == 0 && static_cast<uint64_t>(st.st_size) == sizeof hd + total) {
+        s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+        size_t have = 0;
+        if (cairo_surface_status(s) == CAIRO_STATUS_SUCCESS && cairo_image_surface_get_stride(s) == stride) {
+            cairo_surface_flush(s);
+            unsigned char* dst = cairo_image_surface_get_data(s);
+            while (have < total) {
+                const ssize_t n = read(fd, dst + have, total - have);
+                if (n > 0) have += static_cast<size_t>(n);
+                else if (n == 0 || errno != EINTR) break;
+            }
+            cairo_surface_mark_dirty(s);
+        }
+        if (have != total) { cairo_surface_destroy(s); s = nullptr; }
+        else futimens(fd, nullptr);  // (used today: the ones no lock has read for a long time are removed, pruneBackgrounds)
+    }
+    close(fd);
+    return s;
+}
+
+// The backgrounds of screen sizes that are no longer used (a monitor that is gone) do not stay for ever.
+void pruneBackgrounds() {
+    const std::string dir = cacheDir();
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    const time_t old = time(nullptr) - 60 * 24 * 3600;
+    while (const dirent* e = readdir(d)) {
+        const std::string n = e->d_name;
+        if (n.rfind(kBgPrefix, 0) != 0 || n.size() < std::strlen(kPixSuffix) || n.compare(n.size() - std::strlen(kPixSuffix), std::string::npos, kPixSuffix) != 0) continue;
+        struct stat st {};
+        const std::string path = dir + "/" + n;
+        if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_mtime < old) unlink(path.c_str());
+    }
+    closedir(d);
+}
+
+// Written beside and renamed over, so a lock never reads half a file. The surface is one that lives as long as the program (it is only read here).
+void writePixels(const std::string& file, uint64_t key, cairo_surface_t* s) {
+    const int w = cairo_image_surface_get_width(s), h = cairo_image_surface_get_height(s), stride = cairo_image_surface_get_stride(s);
+    const unsigned char* px = cairo_image_surface_get_data(s);
+    if (!px || w <= 0 || h <= 0) return;
+    mkdir(cacheDir().c_str(), 0755);
+    const std::string tmp = file + ".tmp";
+    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return;
+    PixHeader hd{};
+    std::memcpy(hd.magic, kPixMagic, sizeof kPixMagic);
+    hd.version = kPixVersion;
+    hd.w = static_cast<uint32_t>(w);
+    hd.h = static_cast<uint32_t>(h);
+    hd.stride = static_cast<uint32_t>(stride);
+    hd.key = key;
+    const auto all = [fd](const void* p, size_t n) {
+        const auto* b = static_cast<const unsigned char*>(p);
+        while (n > 0) {
+            const ssize_t k = write(fd, b, n);
+            if (k > 0) { b += k; n -= static_cast<size_t>(k); }
+            else if (k < 0 && errno == EINTR) continue;
+            else return false;
+        }
+        return true;
+    };
+    const bool ok = all(&hd, sizeof hd) && all(px, static_cast<size_t>(stride) * h);
+    if (close(fd) != 0 || !ok || rename(tmp.c_str(), file.c_str()) != 0) unlink(tmp.c_str());
+}
+
+// loadCover(), from the file of the last time when it is the same picture; decoded, and kept for the next time, when it is not.
+cairo_surface_t* cachedCover(const std::string& path, int w, int h, const std::string& file, bool* decoded = nullptr) {
+    const uint64_t key = g_pixCache ? sourceKey(path, w, h) : 0;
+    if (decoded) *decoded = true;
+    if (key)
+        if (cairo_surface_t* s = readPixels(file, key, w, h)) {
+            if (decoded) *decoded = false;
+            return s;
+        }
+    cairo_surface_t* s = loadCover(path, w, h);
+    if (s && key) {
+        cairo_surface_flush(s);
+        // (beside the first frame, which does not wait for it; a thread that cannot be made only means the picture is decoded again the next time)
+        g_pixWriting++;
+        try {
+            std::thread([file, key, s]() { writePixels(file, key, s); pruneBackgrounds(); g_pixWriting--; }).detach();
+        } catch (...) { g_pixWriting--; }
+    }
+    return s;
+}
+// The files are whole before the program ends (the modes that paint and leave; a lock lasts far longer than the writing).
+void joinPixWriters() {
+    while (g_pixWriting > 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+}
+
 void loadProfile() {
     const std::string ii = readFile(homeDir() + "/.config/illogical-impulse/config.json");
     std::string pic, own, display;
@@ -265,7 +425,7 @@ void loadProfile() {
     g_profile.user = pw ? pw->pw_name : "";
     g_profile.name = identity::displayName(display, g_profile.user);
     for (const std::string& c : {own, pic, homeDir() + "/.face", homeDir() + "/.face.icon"})
-        if (!c.empty() && access(c.c_str(), R_OK) == 0) { g_profile.avatar = loadCover(c, kAvatar, kAvatar); break; }
+        if (!c.empty() && access(c.c_str(), R_OK) == 0) { g_profile.avatar = cachedCover(c, kAvatar, kAvatar, cacheDir() + "/lock-avatar" + kPixSuffix); break; }
 }
 
 struct Weather {
@@ -551,6 +711,7 @@ struct App {
     LockAnim animMode = LockAnim::None;
     enum { AnimIdle, AnimEntering, AnimExiting } animPhase = AnimIdle;
     bool animStarted = false, unlocking = false;
+    bool entryShown = false, firstFrame = false;  // entryShown: the first frame of coming in was painted (its clock starts there)
     std::chrono::steady_clock::time_point animStart;
     double animSeconds = 0.55, shapeStart = 0;
     std::string shapeName = "Cookie7Sided", baseRole;  // baseRole: the color outside the shape when the wallpaper is centered
@@ -626,19 +787,40 @@ bool readFeeds() {
     return fresh;
 }
 
-cairo_surface_t* background(int w, int h) {
+// The still picture of the wallpaper at the size of a screen.
+cairo_surface_t* stillBackground(int w, int h) {
     const std::string key = std::to_string(w) + "x" + std::to_string(h);
-    if (!g_videoPath.empty()) {
-        VideoFeed& f = g_feeds[key];
-        if (f.pid < 0) startFeed(f, w, h);
-        if (f.frame) return f.frame;
-    }
     if (auto it = g_bgCache.find(key); it != g_bgCache.end()) return it->second;
     std::string path = readFile(stateDir() + "/wallpaper.txt");
     while (!path.empty() && (path.back() == '\n' || path.back() == ' ')) path.pop_back();
-    cairo_surface_t* small = path.empty() ? nullptr : loadCover(path, w, h);
+    bool decoded = true;
+    cairo_surface_t* small = path.empty() ? nullptr : cachedCover(path, w, h, cacheDir() + "/" + kBgPrefix + key + kPixSuffix, &decoded);
     g_bgCache[key] = small;
+    mark(!small ? "wallpaper: none" : decoded ? "wallpaper ready (decoded from the picture)" : "wallpaper ready (read from the cache)");
     return small;
+}
+
+cairo_surface_t* background(int w, int h) {
+    if (!g_videoPath.empty()) {
+        VideoFeed& f = g_feeds[std::to_string(w) + "x" + std::to_string(h)];
+        if (f.pid < 0) startFeed(f, w, h);
+        if (f.frame) return f.frame;
+    }
+    return stillBackground(w, h);
+}
+
+// `end4pC-lock --warm`: after the wallpaper changed, decodes it once for every screen size a lock has used, so the next lock finds it ready.
+void warmBackgrounds() {
+    std::vector<std::pair<int, int>> sizes;
+    if (DIR* d = opendir(cacheDir().c_str())) {
+        while (const dirent* e = readdir(d)) {
+            int w = 0, h = 0, end = 0;
+            const std::string format = std::string(kBgPrefix) + "%dx%d" + kPixSuffix + "%n";
+            if (std::sscanf(e->d_name, format.c_str(), &w, &h, &end) == 2 && end > 0 && e->d_name[end] == 0 && w > 0 && h > 0 && w <= 16384 && h <= 16384) sizes.emplace_back(w, h);
+        }
+        closedir(d);
+    }
+    for (const auto& [w, h] : sizes) stillBackground(w, h);
 }
 
 void onBufferRelease(void*, wl_buffer* b) { wl_buffer_destroy(b); }
@@ -1233,6 +1415,9 @@ void draw(Output& o) {
             o.cacheH = H;
             o.cacheDirty = false;
         }
+        // The animation of coming in begins with the first frame that is shown, and not when the screen was ready: what it took to paint that frame
+        // (the wallpaper, the type) is not taken from it.
+        if (g.animPhase == App::AnimEntering && !g.entryShown) { g.entryShown = true; g.animStart = std::chrono::steady_clock::now(); }
         compose(cr, W, H, o.cache, animOpen());
         o.framePending = true;
         o.frameAt = std::chrono::steady_clock::now();
@@ -1243,10 +1428,12 @@ void draw(Output& o) {
     }
 
     cairo_destroy(cr);
+    if (!g.firstFrame) mark("first frame painted");
     wl_buffer* buffer = hidpi::buffer(hf, g.shm);
     if (!buffer) return;
     wl_buffer_add_listener(buffer, &kBufferListener, nullptr);
     hidpi::present(o.surface, buffer, hf, o.scale);
+    if (!g.firstFrame) { g.firstFrame = true; mark("first frame committed"); }
     o.wallpaperDrawn = !o.fullLockScreen;
 }
 void drawAll() { for (auto& o : g.outputs) draw(*o); }
@@ -1282,6 +1469,7 @@ void onLockSurfaceConfigure(void* d, ext_session_lock_surface_v1* ls, uint32_t s
     o->cacheDirty = true;
     o->wallpaperDrawn = false;
     if (o->fullLockScreen && !g.animStarted) {  // the first screen that is ready starts the animation of coming in
+        mark("first screen configured");
         g.animStarted = true;
         if (g.animMode != LockAnim::None) { g.animPhase = App::AnimEntering; g.animStart = std::chrono::steady_clock::now(); }
     }
@@ -1325,6 +1513,7 @@ void tellShell() {
 void onLocked(void*, ext_session_lock_v1*) {
     g.locked = true;
     g.lockedAt = std::chrono::steady_clock::now();
+    mark("the compositor says the session is locked");
     if (FILE* m = std::fopen(lockMarker().c_str(), "w")) { std::fprintf(m, "%d\n", static_cast<int>(getpid())); std::fclose(m); }
     tellShell();
 }
@@ -1703,6 +1892,10 @@ void readClockConfig(const std::string& config) {
 }
 
 int main(int argc, char** argv) {
+    g_t0 = std::chrono::steady_clock::now();
+    if (const char* t = std::getenv("END4PC_LOCK_TIMING")) g_timing = *t && std::strcmp(t, "0") != 0;
+    if (const char* n = std::getenv("END4PC_LOCK_NOCACHE")) g_pixCache = !*n || std::strcmp(n, "0") == 0;
+    markBeforeMain();
     if (pipe(g_wake) != 0) return 1;
     loadColors();
     applyShellFont(fontFamilyFromConfig(configFile()), fontWeightFromConfig(configFile(), "fontWeightText", 450), fontWeightFromConfig(configFile(), "fontWeightTitle", 550));
@@ -1714,7 +1907,9 @@ int main(int argc, char** argv) {
         i18n::load(lang, assetsDir(), cd + "/i18n");
     }
     readClockConfig(config);
+    mark("config, colors, font, language");
     loadProfile();
+    mark("profile and avatar");
     loadWeatherCache();
     readAnimConfig();
     std::string screens;
@@ -1722,8 +1917,9 @@ int main(int argc, char** argv) {
     std::istringstream monitorList(screens);
     for (std::string name; std::getline(monitorList, name, ',');)
         if (!name.empty()) g.lockScreens.push_back(name);
-    if (argc >= 3 && std::strcmp(argv[1], "--dump-frames") == 0) { dumpFrames(argv[2]); return 0; }
-    if (argc >= 3 && std::strcmp(argv[1], "--dump-player") == 0) { dumpPlayer(argv[2]); return 0; }
+    if (argc >= 2 && std::strcmp(argv[1], "--warm") == 0) { warmBackgrounds(); joinPixWriters(); return 0; }
+    if (argc >= 3 && std::strcmp(argv[1], "--dump-frames") == 0) { dumpFrames(argv[2]); joinPixWriters(); return 0; }
+    if (argc >= 3 && std::strcmp(argv[1], "--dump-player") == 0) { dumpPlayer(argv[2]); joinPixWriters(); return 0; }
 
     g.xkbCtx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     g.display = wl_display_connect(nullptr);
@@ -1733,12 +1929,14 @@ int main(int argc, char** argv) {
     wl_display_roundtrip(g.display);
     wl_display_roundtrip(g.display);
     if (!g.manager || !g.compositor || !g.shm) { std::fprintf(stderr, "end4pC-lock: the compositor lacks ext-session-lock-v1\n"); return 1; }
+    mark("Wayland connected");
 
     g.lock = ext_session_lock_manager_v1_lock(g.manager);
     ext_session_lock_v1_add_listener(g.lock, &kLockListener, nullptr);
     for (auto& o : g.outputs) createLockSurface(*o);
     wl_display_roundtrip(g.display);
     if (g.finished) { std::fprintf(stderr, "end4pC-lock: another lock screen is already running\n"); return 1; }
+    mark("lock asked for, first events handled");
 
     std::thread(weatherLoop).detach();
     startFingerprint();
