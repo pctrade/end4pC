@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#E6CDF7"/>
+      <stop offset="1" stop-color="#B98BE3"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- Vid3os: a lilac rounded square with a play triangle and the bar of time under it, centred on the square -->
+  <rect x="8" y="10" width="112" height="112" rx="32" fill="#2E1348" opacity="0.18"/>
+  <rect x="8" y="6" width="112" height="112" rx="32" fill="url(#bg)"/>
+  <rect x="8" y="6" width="112" height="112" rx="32" fill="url(#shine)"/>
+  <path d="M52 34 L52 72 Q52 77 56.5 74.5 L84 57.5 Q88 55 84 52.5 L56.5 31.5 Q52 29 52 34 Z" fill="#3A1A5C" transform="translate(-3 2)"/>
+  <rect x="30" y="86" width="68" height="8" rx="4" fill="#3A1A5C" opacity="0.35"/>
+  <rect x="30" y="86" width="40" height="8" rx="4" fill="#3A1A5C" opacity="0.85"/>
+</svg>

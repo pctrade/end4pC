@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Imag3s
+GenericName=Image Viewer
+Comment=A light image viewer where you can also draw on the picture
+# @DIR@ is the folder of the shell (~/.config/end4pC); scripts/install-desktop-entries.sh writes the real file to ~/.local/share/applications
+Exec=@DIR@/build/end4pC-imag3s %f
+Icon=@DIR@/assets/imag3s.svg
+Terminal=false
+Categories=Graphics;Viewer;2DGraphics;
+MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;image/tiff;image/svg+xml;image/avif;image/x-icon;
+StartupWMClass=end4pC-imag3s
+Keywords=image;picture;photo;viewer;annotate;draw;screenshot;

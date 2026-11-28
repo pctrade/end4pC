@@ -140,3 +140,18 @@ executable('end4pC-t3xt', 'src/editor/editor.cpp', generated,
   dependencies: [wayland_client, pangocairo, pangoft2, fontconfig, gdkpixbuf, rsvg, xkb, threads],
   install: false)
 test('editor', executable('editor-test', 'tests/editor/test_editor.cpp', cpp_args: ['-O1'], install: false), timeout: 30)
+
+# Imag3s: the image viewer with annotations (src/images/). The model of the edits (marks, undo, turn and mirror) is tested alone.
+executable('end4pC-imag3s', 'src/images/images.cpp', generated,
+  dependencies: [wayland_client, pangocairo, pangoft2, fontconfig, gdkpixbuf, rsvg, xkb, threads, gio],
+  install: false)
+test('images', executable('images-test', 'tests/images/test_images.cpp', cpp_args: ['-O1'], install: false), timeout: 30)
+
+# Vid3os: the video player (src/video/). libmpv decodes and renders in software into the shared-memory buffers; the controls are drawn over it.
+mpv_lib = dependency('mpv', required: false)
+if mpv_lib.found()
+  executable('end4pC-vid3os', 'src/video/vid3os.cpp', generated,
+    dependencies: [wayland_client, pangocairo, pangoft2, fontconfig, gdkpixbuf, rsvg, xkb, threads, mpv_lib],
+    install: false)
+  test('video', executable('video-test', 'tests/video/test_video.cpp', cpp_args: ['-O1'], install: false), timeout: 30)
+endif

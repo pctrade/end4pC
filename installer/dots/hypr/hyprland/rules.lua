@@ -62,9 +62,11 @@ local fcs_class = {
     {class = "^(org.kde.discover)$",                        size = {"(monitor_w*0.65)", "(monitor_h*0.65)"}},
     {class = "^(org.kde.kdialog)$",                        size = {"(monitor_w*0.65)", "(monitor_h*0.65)"}},
     {class = "^(org.kde.gwenview)$",                        size = {"(monitor_w*0.65)", "(monitor_h*0.65)"}},
+    {class = "^(end4pC-imag3s)$",                           size = {"(monitor_w*0.65)", "(monitor_h*0.65)"}},
     {class = "^(org.kde.dolphin)$",                         size = {"(monitor_w*0.65)", "(monitor_h*0.65)"}},
     {class = "^(walls.py)$",                                size = {"(monitor_w*0.45)", "(monitor_h*0.55)"}},
     {class = "^(mpv)$",                                     size = {"(monitor_w*0.75)", "(monitor_h*0.75)"}},
+    {class = "^(end4pC-vid3os)$",                           size = {"(monitor_w*0.75)", "(monitor_h*0.75)"}},
     {class = "^(org.gnome.Calculator)$",                    size = {"(monitor_w*0.21)", "(monitor_h*0.70)"}},
 }
 for _, r in ipairs(fcs_class) do

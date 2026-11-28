@@ -231,6 +231,8 @@ void printUsage() {
         "  play3r [song or folder]          the music player (opens it, or closes it; with a path it plays it)\n"
         "  fil3s [folder]                   the file manager (a new window, on the folder if given)\n"
         "  t3xt [file]                      the text editor (a new window, with the file open if given)\n"
+        "  imag3s [picture]                 the image viewer (a new window, with the picture open if given)\n"
+        "  vid3os [video]                   the video player (a new window, playing the video if given)\n"
         "  osd volume | osd brightness      show the on-screen display\n"
         "\n"
         "Desktop widgets:\n"

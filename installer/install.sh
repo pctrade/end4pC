@@ -490,7 +490,7 @@ if [ "$DO_BUILD" = 1 ]; then
         [ -x build/end4pC ] || die "the build did not produce build/end4pC"
         # Play3r (the music player) is built only when ffmpeg, taglib and the PipeWire headers are there: give it its application-menu entry
         if [ -x build/end4pC-play3r ]; then
-            "$PROJECT/scripts/install-desktop-entries.sh" >/dev/null && echo "    Play3r, Fil3s and T3xt installed: find them in the launcher, or run  end4pC play3r / fil3s / t3xt"
+            "$PROJECT/scripts/install-desktop-entries.sh" >/dev/null && echo "    Play3r, Fil3s, T3xt, Imag3s and Vid3os installed: find them in the launcher, or run  end4pC play3r / fil3s / t3xt / imag3s / vid3os"
         else
             echo "    Play3r (the music player) was not built: install ffmpeg, taglib and pipewire, then run  ninja -C build"
         fi

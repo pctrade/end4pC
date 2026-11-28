@@ -26,7 +26,7 @@ const std::vector<KbKind>& kbKinds() {
     static const std::vector<KbKind> k = {
         {"exec", "Run a command", "code", "Command", true, true, {}},
         {"shell", "Shell action", "settings", "Action", true, true,
-         {{"settings", "Settings"}, {"tools", "Tools"}, {"tasks", "Task Manager"}, {"play3r", "Play3r"}, {"fil3s", "Fil3s"}, {"t3xt", "T3xt"}, {"overview", "Overview"}, {"launcher toggle", "Launcher"},
+         {{"settings", "Settings"}, {"tools", "Tools"}, {"tasks", "Task Manager"}, {"play3r", "Play3r"}, {"fil3s", "Fil3s"}, {"t3xt", "T3xt"}, {"imag3s", "Imag3s"}, {"vid3os", "Vid3os"}, {"overview", "Overview"}, {"launcher toggle", "Launcher"},
           {"launcher clipboard", "Clipboard history"}, {"launcher emoji", "Emoji picker"}, {"selector toggle", "Wallpaper"}, {"media toggle", "Media"},
           {"panel toggle", "Notifications"}, {"control toggle", "Control center"}, {"control wifi", "Wi-Fi"}, {"control bt", "Bluetooth"},
           {"clockpanel toggle", "Calendar"}, {"weatherpanel toggle", "Weather"}, {"aipanel toggle", "AI chat"}, {"respanel toggle", "Resources"},

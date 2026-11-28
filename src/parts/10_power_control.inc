@@ -640,6 +640,8 @@ void toggleTasks();
 void togglePlay3r(const std::string& argument);
 void openFil3s(const std::string& argument);
 void openT3xt(const std::string& argument);
+void openImag3s(const std::string& argument);
+void openVid3os(const std::string& argument);
 pid_t mediaSend(App& app, std::initializer_list<const char*> args);
 void setDoNotDisturb(App& app, bool on);
 void runSystemUpdate(const App& app) {

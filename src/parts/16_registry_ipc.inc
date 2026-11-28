@@ -490,6 +490,14 @@ void handleClient(App& app, int listenFd) {
         openT3xt(cmd.size() > 5 ? cmd.substr(5) : "");
         reply = "ok";
     }
+    else if (cmd == "vid3os" || cmd.rfind("vid3os ", 0) == 0) {
+        openVid3os(cmd.size() > 7 ? cmd.substr(7) : "");
+        reply = "ok";
+    }
+    else if (cmd == "imag3s" || cmd.rfind("imag3s ", 0) == 0) {
+        openImag3s(cmd.size() > 7 ? cmd.substr(7) : "");
+        reply = "ok";
+    }
     else if (cmd == "tools" || cmd.rfind("tools ", 0) == 0) {
         toggleTools();
         reply = "ok";

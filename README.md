@@ -38,7 +38,7 @@ It started as a C++ port of my Quickshell config and keeps its Material 3 look.
 - **Wallpaper and themes:** local, Wallhaven, Unsplash and Pexels wallpapers, palettes generated from the wallpaper (matugen) or ready-made themes.
 - **Capture and tools:** screenshots and recording with annotations, OCR, Google Lens and QR; Tools with a translator, notes, converters, timers, a key bind editor and more.
 - **Desktop and system:** widgets, lock screen, game overlay, hot corners, Task Manager, accessibility, and a Settings app that configures almost everything.
-- **Three small programs of their own**, in the same Material look: [**Play3r**](docs/play3r.md), a music player with synced lyrics; [**Fil3s**](docs/fil3s.md), a file manager with one-click conversions and archives; [**T3xt**](docs/t3xt.md), a text editor with syntax highlighting in the colours of the shell.
+- **Five small programs of their own**, in the same Material look: [**Play3r**](docs/play3r.md), a music player with synced lyrics; [**Fil3s**](docs/fil3s.md), a file manager with one-click conversions and archives; [**T3xt**](docs/t3xt.md), a text editor with syntax highlighting in the colours of the shell; [**Imag3s**](docs/imag3s.md), an image viewer where you can also draw on the picture; [**Vid3os**](docs/vid3os.md), a video player.
 
 The full list is in [Features](docs/features.md).
 
@@ -60,7 +60,7 @@ Other distributions, the packages it needs, updating (`end4pC update`) and launc
 |---|---|
 | [Requirements and install](docs/install.md) | Packages, installer, building by hand, updating, launching |
 | [Features](docs/features.md) | Everything the shell does |
-| [Play3r](docs/play3r.md) · [Fil3s](docs/fil3s.md) · [T3xt](docs/t3xt.md) | The music player, the file manager and the text editor |
+| [Play3r](docs/play3r.md) · [Fil3s](docs/fil3s.md) · [T3xt](docs/t3xt.md) · [Imag3s](docs/imag3s.md) · [Vid3os](docs/vid3os.md) | The music player, the file manager, the text editor, the image viewer and the video player |
 | [Command line reference](docs/commands.md) | Every `end4pC` command |
 | [Keybinds](docs/keybinds.md) | The default binds and how to edit them |
 | [Configuration](docs/configuration.md) | Where the settings live |

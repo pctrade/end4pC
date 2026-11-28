@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Vid3os
+GenericName=Video Player
+Comment=A light video player: the controls go away while it plays
+# @DIR@ is the folder of the shell (~/.config/end4pC); scripts/install-desktop-entries.sh writes the real file to ~/.local/share/applications
+Exec=@DIR@/build/end4pC-vid3os %f
+Icon=@DIR@/assets/vid3os.svg
+Terminal=false
+Categories=AudioVideo;Video;Player;
+MimeType=video/mp4;video/x-matroska;video/webm;video/mpeg;video/x-msvideo;video/quicktime;video/ogg;video/x-flv;video/x-ms-wmv;video/3gpp;video/mp2t;
+StartupWMClass=end4pC-vid3os
+Keywords=video;movie;player;mp4;mkv;film;

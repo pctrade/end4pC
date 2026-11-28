@@ -60,6 +60,8 @@ All take `toggle` (the default), `open` or `close` unless noted.
 | `play3r [song or folder]` | The music player: opens it (closes it when open); with a path it plays it |
 | `fil3s [folder]` | The file manager: a new window, on that folder if given |
 | `t3xt [file]` | The text editor: a new window, with that file open if given |
+| `imag3s [picture]` | The image viewer: a new window, with that picture open if given |
+| `vid3os [video]` | The video player: a new window, playing that video if given |
 | `tasks` | Task Manager window |
 | `osd volume \| osd brightness` | Show the on-screen display |
 

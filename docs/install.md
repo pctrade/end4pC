@@ -81,6 +81,8 @@ Binaries produced in `build/`:
 | `end4pC-play3r` | The music player |
 | `end4pC-fil3s` | The file manager |
 | `end4pC-t3xt` | The text editor |
+| `end4pC-imag3s` | The image viewer |
+| `end4pC-vid3os` | The video player (needs `libmpv`, in the `mpv` package) |
 | `end4pC-lock` | The lock screen |
 
 <details>

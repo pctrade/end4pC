@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#F7D2DC"/>
+      <stop offset="1" stop-color="#E49DB4"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- Imag3s: a rounded square with a picture (a sun and two hills) and a pencil stroke over it, centred on the square -->
+  <rect x="8" y="10" width="112" height="112" rx="32" fill="#3A1426" opacity="0.18"/>
+  <rect x="8" y="6" width="112" height="112" rx="32" fill="url(#bg)"/>
+  <rect x="8" y="6" width="112" height="112" rx="32" fill="url(#shine)"/>
+  <g fill="#4A1B30">
+    <circle cx="82" cy="40" r="9"/>
+    <path d="M26 88 L50 56 Q53 52 56 56 L76 82 L84 72 Q87 68 90 72 L102 88 Q104 92 100 92 L28 92 Q24 92 26 88 Z" opacity="0.85"/>
+  </g>
+  <path d="M30 100 Q52 80 74 96 T106 84" fill="none" stroke="#4A1B30" stroke-width="5.5" stroke-linecap="round" opacity="0.55"/>
+</svg>
