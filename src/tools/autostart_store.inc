@@ -201,7 +201,9 @@ std::vector<AsOpen> asCaptureOpen(const std::vector<AsApp>& existing) {
             p = t + 1;
         }
         if (f.size() < 5 || (f[0].empty() && f[1].empty())) continue;
-        if (f[0].rfind("end4pC", 0) == 0 || f[1].rfind("end4pC", 0) == 0) continue;  // (the shell's own windows)
+        // The shell's own windows (Settings, Tools, the lock screen...) are not apps to start; Play3r, Fil3s and T3xt are programs of their own and are.
+        auto ownWindow = [](const std::string& c) { return c.rfind("end4pC", 0) == 0 && c != "end4pC-play3r" && c != "end4pC-fil3s" && c != "end4pC-t3xt"; };
+        if (ownWindow(f[0]) || ownWindow(f[1])) continue;
         AsOpen o;
         const int wsId = std::atoi(f[3].c_str());
         o.app.ws = f[4].rfind("special", 0) == 0 ? kAsSpecial : wsId > 0 ? std::min(wsId, kAsMaxWs) : 0;
