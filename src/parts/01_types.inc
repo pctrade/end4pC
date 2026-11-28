@@ -1803,7 +1803,7 @@ struct App {
     std::chrono::steady_clock::time_point islandLast{};
     struct BarWeather { bool ok = false; int temp = 0, code = 0; bool day = true; } barWeather;
     struct BarAi { bool seen = false; double pct = 0; int sessions = 0; long long resetsAt = 0; } barAi[2], codexWeekly;
-    int weatherBarW = 0, aiBarW = 0;
+    int weatherBarW = 0, aiBarW = 0, netSpeedW = 64;
     double aiPillSplit = 0;
     // The bar's "keyboard" module and its popup: the layouts of the main keyboard (Hyprland's input:kb_layout) and the one in use.
     struct KbdLayout { std::string code, name; };

@@ -165,10 +165,10 @@ void drawVolumeM3(cairo_t* cr, const App& app, double x, double barH) {
 }
 void drawNetworkM3(cairo_t* cr, const App& app, double x, double barH) {
     const char* icon = app.netKind == "wifi" ? "wifi" : app.netKind == "ethernet" ? "settings_ethernet" : app.netKind == "vpn" ? "vpn_lock" : "link_broken";
-    const double y = (barH - kQuickBox) / 2.0;
+    const double y = (barH - kQuickBox) / 2.0, pad = netFramePad(app, false);
     m3GroupPill(cr, app, x, y, netExtent(app, false), kQuickBox);
-    if (netIconShown(app)) drawIcon(cr, icon, x + (kNetW - 18) / 2.0, y + (kQuickBox - 18) / 2.0, 18, app.color(m3IconOnly(netExtent(app, false), kQuickBox) ? "on_secondary_container" : "on_surface_variant"));
-    if (netSpeedShown(app)) drawNetSpeedM3(cr, app, x + netIconPart(app, false), y, kNetSpeedW, kQuickBox);
+    if (netIconShown(app)) drawIcon(cr, icon, x + pad / 2 + (kNetW - 18) / 2.0, y + (kQuickBox - 18) / 2.0, 18, app.color(m3IconOnly(netExtent(app, false), kQuickBox) ? "on_secondary_container" : "on_surface_variant"));
+    if (netSpeedShown(app)) drawNetSpeedM3(cr, app, x + pad / 2 + netIconPart(app, false), y, app.netSpeedW, kQuickBox);
 }
 void drawBatteryM3(cairo_t* cr, const App& app, double x, double barH, int pct, bool charging, const Color& ink) {
     constexpr double kBarW = 30, kBarH = 18, kTipW = 2, kTipH = 10, kBoltW = 12, kBarRadius = 6;
@@ -1688,6 +1688,22 @@ void measureBarModules(App& app) {
     PangoLayout* layout = pango_cairo_create_layout(cr);
     app.weatherBarW = static_cast<int>(std::ceil(weatherBarPaint(nullptr, app, layout, 0, 0)));
     app.aiBarW = static_cast<int>(std::ceil(aiBarPaint(nullptr, app, layout, 0, 0, -1, &app.aiPillSplit)));
+    const std::string ns = paintStyle(app, "network");
+    const bool m3 = ns == "m3", framed = !m3 && framedStyle(ns);
+    const int fontSz = m3 || framed ? 10 : 11, arrowSz = m3 ? 12 : framed ? 10 : 11;  // (the sizes of drawNetSpeed / drawNetSpeedM3)
+    PangoFontDescription* nfd = pango_font_description_from_string("Sans");
+    pango_font_description_set_absolute_size(nfd, fontSz * PANGO_SCALE);
+    pango_font_description_set_weight(nfd, PANGO_WEIGHT_MEDIUM);
+    pango_layout_set_font_description(layout, nfd);
+    pango_font_description_free(nfd);
+    int maxTw = 0;
+    for (const char* sample : {"1000 MB/s", "1024 MB/s"}) {
+        pango_layout_set_text(layout, sample, -1);
+        int tw = 0;
+        pango_layout_get_pixel_size(layout, &tw, nullptr);
+        maxTw = std::max(maxTw, tw);
+    }
+    app.netSpeedW = std::max(kNetSpeedW, 2 + arrowSz + 2 + maxTw + 2);
     g_object_unref(layout);
     cairo_destroy(cr);
     cairo_surface_destroy(surf);
@@ -3013,6 +3029,7 @@ void draw(Bar& bar) {
         const double nx = networkX(bar), ny = (bar.height - kQuickBox) / 2.0, nhgt = kQuickBox;
         const std::string ns = widgetStyle(app, "network");
         const double ne = netSpeedShown(app) ? 0 : softExtra(app, "network");
+        const double pad = netFramePad(app, false);
         const Color framed = styleFrame(cr, app, ns, nx, ny, netExtent(app, false), nhgt, nh);
         const Color ink = app.netKind == "none" ? app.color("outline") : framed;
         const char* icon = app.netKind == "wifi" ? "wifi" : app.netKind == "ethernet" ? "settings_ethernet"
@@ -3034,9 +3051,9 @@ void draw(Bar& bar) {
             pango_layout_set_font_description(layout, font);
             pango_font_description_free(f);
         } else if (netIconShown(app)) {
-            drawIcon(cr, icon, nx + ne / 2 + (kNetW - 18) / 2.0, ny + (nhgt - 18) / 2.0, 18, ink, nh);
+            drawIcon(cr, icon, nx + ne / 2 + pad / 2 + (kNetW - 18) / 2.0, ny + (nhgt - 18) / 2.0, 18, ink, nh);
         }
-        if (netSpeedShown(app)) drawNetSpeed(cr, app, nx + netIconPart(app, false), ny, kNetSpeedW, nhgt, true, framedStyle(ns) ? &framed : nullptr);
+        if (netSpeedShown(app)) drawNetSpeed(cr, app, nx + pad / 2 + netIconPart(app, false), ny, app.netSpeedW, nhgt, true, framedStyle(ns) ? &framed : nullptr);
     }
 
     if (hasSlot(bar, "battery")) {
