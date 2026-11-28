@@ -149,5 +149,6 @@ int g_wakeFd = -1;
 
 int main(int argc, char** argv) {
     setlocale(LC_ALL, "");
+    setlocale(LC_NUMERIC, "C");  // libmpv refuses to start under a locale with another decimal separator (and the seek times are written with a point)
     return run(argc, argv);
 }
